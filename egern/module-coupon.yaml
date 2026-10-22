@@ -10,7 +10,7 @@ compat_arguments:
   # 脚本地址：填本仓库 raw 地址（安装后可在模块页面改）
   #   https://raw.githubusercontent.com/<你的账号>/<仓库名>/main/egern/coupon-sniper.js
   # 留空则用下面的默认值
-  脚本地址: 'https://raw.githubusercontent.com/OVERRIDE/egern-coupon-sniper/main/egern/coupon-sniper.js'
+  脚本地址: 'https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/coupon-sniper.js'
   放券时刻: '00:00:00'
   提前量毫秒: '50'
   重试次数: '40'
