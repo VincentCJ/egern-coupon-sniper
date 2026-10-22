@@ -751,5 +751,53 @@ console.log('\n[45] 睡前自检 正常时安静');
   check('模板正常时无通知', ctx._notifications.length === 0, '实际 ' + ctx._notifications.length);
 }
 
+// ============ 46. 未知结果通知按小时节流（防刷屏）============
+console.log('\n[46] 未知结果不刷屏');
+{
+  const ctx = makeCtx({
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '1' },
+    httpReply: { status: 200, body: '{"weird":"payload"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  const n1 = ctx._notifications.length;
+  check('第一次会通知', n1 === 1, '实际 ' + n1);
+  check('通知里带原始返回', ctx._notifications[0] && /原始返回/.test(ctx._notifications[0].body),
+    ctx._notifications[0] && ctx._notifications[0].body);
+  // 连续多轮不应重复通知
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('不再重复通知', ctx._notifications.length === n1, '实际 ' + ctx._notifications.length);
+}
+
+// ============ 47. 接口不存在 = 抓错接口（明确提示）============
+console.log('\n[47] 接口不存在有专门提示');
+{
+  const ctx = makeCtx({
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '5' },
+    httpReply: { status: 200, body: '{"code":"2","echo":"the current API does not exist"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('判为 badreq', ctx._notifications[0] && /抓到的可能不是领券接口/.test(ctx._notifications[0].body),
+    ctx._notifications[0] && ctx._notifications[0].body);
+}
+
+// ============ 48. 候选列表角色 ============
+console.log('\n[48] 候选列表脚本');
+{
+  const ctx = makeCtx({});
+  ctx.storage.setJSON('jd_coupon_sniper_cands_v1', [
+    { method: 'POST', url: 'https://api.m.jd.com/client.action?functionId=govCouponReceive',
+      headers: {}, body: 'b', functionId: 'govCouponReceive', capturedAt: Date.now() },
+    { method: 'GET', url: 'https://api.m.jd.com/x?functionId=other', headers: {}, body: null,
+      functionId: 'other', capturedAt: Date.now() - 1000 }
+  ]);
+  await runScript('coupon-sniper.js', ctx, '候选列表');
+  check('列出候选', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
+  check('含 functionId', ctx._notifications[0] && /govCouponReceive/.test(ctx._notifications[0].body),
+    ctx._notifications[0] && ctx._notifications[0].body);
+}
+
 console.log('\n———— ' + pass + ' 通过 / ' + fail + ' 失败 ————');
 process.exit(fail ? 1 : 0);

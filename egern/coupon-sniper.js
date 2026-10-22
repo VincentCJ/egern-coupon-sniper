@@ -396,10 +396,17 @@ async function modeSnipe(ctx) {
     for (const k of crowdKw) { if (k && msg.indexOf(k) >= 0) return 'crowded'; }
 
     if (code === '0' && !subCode) return 'success';
+
+    // 接口不存在 / 请求非法 —— 说明抓到的不��领券接口
+    if (code === '2' || /does not exist|API 不存在|非法请求|参数错误|缺少参数/.test(msg)) return 'badreq';
+
+    // 签名/风控类：说明模板过期
+    if (/签名|sign|h5st|非法|验证失败|未授权|token|expire|过期|请重新登录/.test(msg)) return 'expired';
+
     return 'unknown';
   }
 
-  const TERMINAL = ['success', 'already', 'empty'];
+  const TERMINAL = ['success', 'already', 'empty', 'badreq', 'expired'];
   let lastText = '';
   let lastResult = 'unknown';
   let attempts = 0;
@@ -466,17 +473,32 @@ async function modeSnipe(ctx) {
     empty: '😵 券已发完（当天不再重试）',
     crowded: '🔄 排队太挤，未抢到',
     early: '⏰ 还没到放券时刻',
-    error: '⚠️ 请求失败（网络 / 签名 / 风控），详见状态里的 trace',
-    unknown: '❔ 返回无法判定，模板可能已失效，建议重新抓包'
+    error: '⚠️ 请求失败（网络问题）',
+    badreq: '🚫 接口报错：抓到的可能不是领券接口，请用「候选列表」脚本看看抓到了什么',
+    expired: '🔑 签名/登录态已过期：请在京东 App 点一次「领取」重新抓包',
+    unknown: '❔ 返回无法判定（原始返回见下），可能是模板过期或接口变了'
   };
   const extra = manual ? '\n（手动试跑，已发 ' + attempts + ' 次）' : '';
-  state.resultNotified = true;
+  // 判定不了时把原始返回带出来，方便定位（同一��通知，不额外打扰）
+  let raw = '';
+  if (lastResult === 'unknown' || lastResult === 'error') {
+    raw = '\n原始返回: ' + String(lastText).replace(/\s+/g, ' ').slice(0, 160);
+  }
   await ctx.storage.setJSON(STATE_KEY, state);
-  ctx.notify({
-    title: '京东消费券',
-    body: (labels[lastResult] || lastResult) + extra,
-    sound: true
-  });
+
+  // 通知节流：
+  //   终态（抢到/已领/抢完）-> 必报，这是你要的结果
+  //   非终态（判定不了/网络错）-> 每小时最多一次，避免每分钟刷屏
+  const isTerminalResult = TERMINAL.indexOf(lastResult) >= 0;
+  if (isTerminalResult) {
+    state.resultNotified = true;
+    await ctx.storage.setJSON(STATE_KEY, state);
+    ctx.notify({ title: '京东消费券', body: (labels[lastResult] || lastResult) + extra + raw, sound: true });
+  } else {
+    await notifyOnce(ctx, 'nonterm', HOUR, '京东消费券',
+      (labels[lastResult] || lastResult) + extra + raw +
+      '\n（同一问题每小时只提醒一次；修好后可在模块参数里改「详细通知」）', false);
+  }
 }
 
 // 预热：打一发到同一 host（不涉及领券），顺便测 RTT
@@ -512,6 +534,23 @@ async function modeToggle(ctx) {
       (tpl && tpl.capturedAt ? '（当前模板 ' + new Date(tpl.capturedAt).toLocaleTimeString() + ' 抓取）' : '（暂无模板，去点一次「领取」）')
     : '持续抓取已关闭：不再抓取新请求，模板保持当前版本。';
   ctx.notify({ title: '持续抓包 ' + (next === 'on' ? '已开启' : '已关闭'), body: msg, sound: true });
+}
+
+// ============================ 候选列表模式 ============================
+// 诊断用：把最近抓到的请求列出来，方便确认哪个才是真正的领券接口
+async function modeList(ctx) {
+  const cands = (await ctx.storage.getJSON(CAND_KEY)) || [];
+  if (!cands.length) {
+    ctx.notify({ title: '领券候选列表', body: '还没有抓到任何请求。\n请在京东 App 搜「烟台消费券」点一次「领取」。', sound: true });
+    return;
+  }
+  const lines = cands.slice(0, 8).map((c, i) => {
+    const t = c.capturedAt ? new Date(c.capturedAt).toLocaleTimeString() : '?';
+    const fid = c.functionId || '(无functionId)';
+    const u = String(c.url || '').slice(0, 70);
+    return (i + 1) + '. ' + t + ' ' + c.method + ' ' + fid + '\n   ' + u;
+  });
+  ctx.notify({ title: '领券候选列表(' + cands.length + ')', body: lines.join('\n'), sound: false });
 }
 
 // ============================ 状态模式 ============================
@@ -558,6 +597,7 @@ export default async function (ctx) {
   const name = (ctx.script && ctx.script.name) || '';
   try {
     if (name.indexOf('开关') >= 0) return await modeToggle(ctx);
+    if (name.indexOf('候选') >= 0) return await modeList(ctx);
     if (name.indexOf('状态') >= 0) return await modeStatus(ctx);
     if (name.indexOf('抓包') >= 0) return await modeCapture(ctx);
     if (name.indexOf('抢券') >= 0) return await modeSnipe(ctx);

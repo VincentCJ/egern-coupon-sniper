@@ -134,8 +134,8 @@ scriptings:
   - http_request:
       name: 烟台消费券-自动抓包
       match: '^https?://(api\.m|api|wq|pro\.m|m|coupon|msite|func)\.jd\.com/.*'
-      script_url: '{{{脚本地址}}}'
-      update_interval: 31536000
+      script_url: '{{{脚本地址}}}?v=4'
+      update_interval: 86400
       timeout: 20
       body_required: true
       env:
@@ -149,8 +149,8 @@ scriptings:
   - schedule:
       name: 烟台消费券-定时抢券
       cron: '* * * * *'
-      script_url: '{{{脚本地址}}}'
-      update_interval: 31536000
+      script_url: '{{{脚本地址}}}?v=4'
+      update_interval: 86400
       timeout: 300
       env:
         TARGET_HMS: '{{{放券时刻}}}'
@@ -173,8 +173,8 @@ scriptings:
   - schedule:
       name: 烟台消费券-睡前自检
       cron: '{{{睡前自检cron}}}'
-      script_url: '{{{脚本地址}}}'
-      update_interval: 31536000
+      script_url: '{{{脚本地址}}}?v=4'
+      update_interval: 86400
       timeout: 60
       env:
         CHECK_ONLY: 'true'
@@ -186,8 +186,8 @@ scriptings:
   # 4) 手动试跑：立刻发一次并回报结果（工具→脚本 里点它运行）
   - generic:
       name: 烟台消费券-试跑
-      script_url: '{{{脚本地址}}}'
-      update_interval: 31536000
+      script_url: '{{{脚本地址}}}?v=4'
+      update_interval: 86400
       timeout: 120
       env:
         SNIPE_MODE: 'manual'
@@ -200,20 +200,27 @@ scriptings:
         RETRY_MS: '{{{重试间隔毫秒}}}'
         TIMEOUT_MS: '{{{单次超时毫秒}}}'
 
-  # 5) 开关：手动运行一次即可切换「持续抓取」开/关
+  # 5) 候选列表：诊断用，列出最近抓到的请求
+  - generic:
+      name: 烟台消费券-候选列表
+      script_url: '{{{脚本地址}}}?v=4'
+      update_interval: 86400
+      timeout: 20
+
+  # 6) 开关：手动运行一次即可切换「持续抓取」开/关
   - generic:
       name: 烟台消费券-开关
-      script_url: '{{{脚本地址}}}'
-      update_interval: 31536000
+      script_url: '{{{脚本地址}}}?v=4'
+      update_interval: 86400
       timeout: 20
       env:
         CAPTURE_ALWAYS: '{{{持续抓取}}}'
 
-  # 6) 状态：小组件
+  # 7) 状态：小组件
   - generic:
       name: 烟台消费券-状态
-      script_url: '{{{脚本地址}}}'
-      update_interval: 31536000
+      script_url: '{{{脚本地址}}}?v=4'
+      update_interval: 86400
       timeout: 20
       env:
         CAPTURE_ALWAYS: '{{{持续抓取}}}'
