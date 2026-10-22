@@ -17,8 +17,8 @@ compat_arguments:
   补发模式: 'false'
   持续抓取: 'true'
   抓包匹配: ''
-  全天补抢: 'true'
-  补抢间隔分钟: '15'
+  全天补抢: 'false'
+  补抢间隔分钟: '60'
   补抢截止: '23:00'
 
 compat_arguments_desc: |
@@ -31,7 +31,7 @@ compat_arguments_desc: |
   补发模式: true 时若当天放券时刻已过会立刻补打一次（调试用）
   持续抓取: 开关。true = 打开京东就持续抓取并刷新模板；false = 停止抓取
   抓包匹配: 自定义哪个 URL 算领券动作（正则，留空用内置规则）
-  全天补抢: 官方规则是每日 00:00-23:59 全天发放且限量先到先得，true = 当天没抢到就按间隔继续补抢
+  全天补抢: 仅当上一轮是「排队太挤」这类瞬态未果时才补抢；券已发完/已领过/成功都会当天停止
   补抢间隔分钟: 两次补抢之间隔多少分钟
   补抢截止: 补抢到几点为止
 
@@ -69,13 +69,13 @@ env_schema:
     default_value: ''
   RETRY_ALL_DAY:
     name: 全天补抢
-    description: 当天没抢到就按间隔继续补抢（官方全天发放，限量先到先得）
+    description: 仅「排队太挤」等瞬态未果时补抢；券已发完会立即停止
     options:
-    - 'true'
     - 'false'
+    - 'true'
   RETRY_MINUTES:
     name: 补抢间隔(分钟)
-    default_value: '15'
+    default_value: '60'
   RETRY_UNTIL:
     name: 补抢截止
     default_value: '23:00'

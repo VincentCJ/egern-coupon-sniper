@@ -28,8 +28,10 @@
  *   TIMEOUT_MS      单次请求超时毫秒（默认 6000）
  *   CATCH_UP        'true' = 忽略目标时刻，立刻发一次
  *   SNIPE_MODE      'manual' = 手动试跑（立刻发，并总是回报结果）
- *   RETRY_ALL_DAY   'true' = 没抢到就全天按间隔补抢（默认 true）
- *   RETRY_MINUTES   补抢间隔分钟数（默认 15）
+ *   RETRY_ALL_DAY   'true' = 瞬态未果时按间隔补抢（默认 false；终态一律当天不再打）
+ *   RETRY_MINUTES   补抢间隔分钟数（默认 60）
+ *   EMPTY_KEYWORDS  判定「券已发完」的文案关键词（逗号分隔）
+ *   CROWDED_KEYWORDS 判定「排队/繁忙」瞬态的文案关键词（逗号分隔）
  *   RETRY_UNTIL     补抢截止时刻 "HH:MM"（默认 23:00）
  *   CAPTURE_ALWAYS  'true' = 默认持续抓取（开关模式可临时覆盖）
  *   CAPTURE_MATCH   自定义哪个 URL 算领券动作（可选正则）
@@ -182,8 +184,8 @@ async function modeSnipe(ctx) {
   const preFireMs = num(env.PREFIRE_MS, 50);
   const catchUp = String(env.CATCH_UP || '').toLowerCase() === 'true';
   const manual = String(env.SNIPE_MODE || '').toLowerCase() === 'manual';
-  const retryAllDay = String(env.RETRY_ALL_DAY || 'true').toLowerCase() === 'true';
-  const retryMinutes = num(env.RETRY_MINUTES, 15);
+  const retryAllDay = String(env.RETRY_ALL_DAY || 'false').toLowerCase() === 'true';
+  const retryMinutes = num(env.RETRY_MINUTES, 60);
   const retryUntil = String(env.RETRY_UNTIL || '23:00');
   const targetHms = String(env.TARGET_HMS || '00:00:00');
   const LATE_GRACE = 120000;    // 迟到 2 分钟内仍算"赶上"，立刻补发
@@ -258,9 +260,11 @@ async function modeSnipe(ctx) {
     }
   }
 
-  // 全天补抢：没到点、或点过了还没抢到 → 判断本轮该不该打
+  // 全天补抢：只有「瞬态未果」（排队/网络错）才值得再来一轮；
+  // 如果上一轮已经是终态（券发完 / 已领过 / 成功），当天不再打。
   const isFirstRoundOfDay = !state.lastAttemptTs;
   if (!manual && !catchUp && retryAllDay) {
+    if (!isFirstRoundOfDay && state.terminal) return;   // 终态：当天收工
     const last = Number(state.lastAttemptTs || 0);
     const since = Date.now() - last;
     if (!isFirstRoundOfDay && since < retryMinutes * MINUTE) {
@@ -306,13 +310,47 @@ async function modeSnipe(ctx) {
     }
   }
 
+  // 按京东领券接口的真实返回语义分类
+  //   success  = 抢到了（code=0 且 subCode 命中 A1|B1，或文案明确写成功）
+  //   already  = 你今天已经领过这一类（同一张券每日限领 1 次）
+  //   empty    = 券确实发完了 —— 终态，继续打没有意义，立即停
+  //   crowded  = 排队太挤 / 服务繁忙 —— 瞬态，值得稍后再试
+  //   error    = 网络或超时 —— 瞬态，值得重试
+  // 关键：empty 与 crowded 必须分开，这决定了要不要继续重试。
   function classify(text) {
-    const s = text || '';
-    if (/领取成功|领券成功|领取到|抢到券/.test(s)) return 'success';
-    if (/"success"\s*[:=]\s*true/.test(s)) return 'success';
-    if (/"code"\s*[:=]\s*"?0"?\s*[,}]/.test(s)) return 'success';
-    if (/已领取|已参与|重复领取|超过限领|已抢过|不可重复/.test(s)) return 'already';
-    if (/抢完|已领完|无库存|库存不足|已达上限|已售罄/.test(s)) return 'empty';
+    const raw = text || '';
+    let code = null, subCode = null, msg = raw;
+    try {
+      const j = JSON.parse(raw);
+      code = j.code === undefined ? null : String(j.code);
+      subCode = j.subCode === undefined ? null : String(j.subCode);
+      msg = j.subCodeMsg || j.msg || j.echo || j.tips || raw;
+    } catch (_) { /* 非 JSON，按文案判定 */ }
+    msg = String(msg);
+
+    // 成功：code=0 且 subCode 以 A1/B1 结尾（京东前端就是这么判的）
+    if (code === '0' && subCode && /A1|B1/.test(subCode)) return 'success';
+    if (/领取成功|领券成功|领取到|抢到券|领取成功!/.test(msg)) return 'success';
+    if (/"success"\s*[:=]\s*true/.test(raw)) return 'success';
+
+    // 终态：已经领过（同一类券每日限 1 次）
+    if (/已领取|已参与|重复领取|超过限领|不可重复|已抢过|已经领取/.test(msg)) return 'already';
+
+    // 终态：券发完了 —— 继续打没有意义
+    const emptyKw = (env.EMPTY_KEYWORDS
+      ? env.EMPTY_KEYWORDS.split(',')
+      : ['已抢完', '抢完', '已领完', '无库存', '库存不足', '已售罄', '售罄',
+         '名额已满', '额度已满', '已达上限', '券已发完', '发放完毕', '已被领完']);
+    for (const k of emptyKw) { if (k && msg.indexOf(k) >= 0) return 'empty'; }
+
+    // 瞬态：排队 / 繁忙 —— 值得稍后再试（京东原文：休息一会儿再试试吧）
+    if (code === '601') return 'crowded';
+    const crowdKw = (env.CROWDED_KEYWORDS
+      ? env.CROWDED_KEYWORDS.split(',')
+      : ['排队', '人太多', '太挤', '拥挤', '休息一会', '稍后', '繁忙', '请重试']);
+    for (const k of crowdKw) { if (k && msg.indexOf(k) >= 0) return 'crowded'; }
+
+    if (code === '0' && !subCode) return 'success';   // 老接口只回 code=0
     return 'unknown';
   }
 
@@ -328,11 +366,19 @@ async function modeSnipe(ctx) {
     lastText = r.text || '';
     lastResult = r.ok ? classify(lastText) : 'error';
 
-    if (lastResult === 'success' || lastResult === 'already') break;
-    if (i < maxRounds - 1) await sleep(retryMs + Math.floor(Math.random() * 60));
+    // success / already / empty 都是终态：不再重发
+    // empty（券发完了）尤其要立刻停，继续打纯属浪费且容易触发风控
+    if (lastResult === 'success' || lastResult === 'already' || lastResult === 'empty') break;
+    // crowded / error / unknown 是瞬态：退避后继续
+    if (i < maxRounds - 1) {
+      const backoff = Math.min(retryMs * Math.pow(1.6, i), 4000);
+      await sleep(backoff + Math.floor(Math.random() * 80));
+    }
   }
 
   state[lastResult] = true;
+  // terminal = 终态（成功/已领/券发完），当天不必再补抢
+  state.terminal = (lastResult === 'success' || lastResult === 'already' || lastResult === 'empty');
   state.ts = Date.now();
   state.attempts = attempts;
   state.attemptsTotal = Number(state.attemptsTotal || 0) + attempts;
@@ -343,9 +389,10 @@ async function modeSnipe(ctx) {
   const labels = {
     success: '✅ 抢到了！去京东App「我的-优惠券」确认（券当天有效）',
     already: 'ℹ️ 今日已领取 / 已达上限',
-    empty: '😵 券已抢完（会继续补抢）',
+    empty: '😵 券已发完（当天不再重试）',
+    crowded: '🔄 排队太挤，未抢到（会按间隔再试）',
     error: '⚠️ 请求失败（网络 / 签名 / 风控），详见状态里的 trace',
-    unknown: '❔ 返回无法判定（会继续补抢），模板失效建议重新抓包'
+    unknown: '❔ 返回无法判定，模板可能已失效，建议重新抓包'
   };
   const extra = manual ? '\n（手动试跑，已发 ' + attempts + ' 次）' : '';
   ctx.notify({
