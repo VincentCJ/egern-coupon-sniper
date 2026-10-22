@@ -1,15 +1,13 @@
 name: 烟台消费券定时抢券
-description: 京东App「烟台消费券」专区每日限量放出，本模块自动抓取领券请求并在整点精确重放。需在京东App手动点一次「领取」用于抓包，之后每天自动执行。
-author: local
+description: 京东App「烟台消费券」专区每日限量放出。本模块持续抓取领券请求刷新模板（签名不失效），并在放券时刻精确重放。
+author: VincentCJ
+homepage: https://github.com/VincentCJ/egern-coupon-sniper
 icon: ticket
-homepage: ''
 open_url: ''
 
-# 模块参数（Egern 模块页可直接改）
+# 模块参数（Egern 模块页可直接改，改完立即生效）
 compat_arguments:
-  # 脚本地址：填本仓库 raw 地址（安装后可在模块页面改）
-  #   https://raw.githubusercontent.com/<你的账号>/<仓库名>/main/egern/coupon-sniper.js
-  # 留空则用下面的默认值
+  # 脚本地址：默认指向本仓库 raw；换自己的仓库改这里
   脚本地址: 'https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/coupon-sniper.js'
   放券时刻: '00:00:00'
   提前量毫秒: '50'
@@ -17,15 +15,19 @@ compat_arguments:
   重试间隔毫秒: '250'
   单次超时毫秒: '6000'
   补发模式: 'false'
+  持续抓取: 'true'
+  抓包匹配: ''
 
 compat_arguments_desc: |
-  脚本地址: jd-coupon.js 的地址。Egern 会缓存脚本，填一次即可。
-  放券时刻: 每天几点几分几秒发请求（京东App显示的放量时刻，一般 00:00:00）
-  提前量毫秒: 提前多少毫秒发出，用网络延迟补偿，默认 50
+  脚本地址: coupon-sniper.js 的 raw 地址
+  放券时刻: 每天几点几分几秒发请求（一般 00:00:00）
+  提前量毫秒: 提前多少毫秒发出，用网络延迟补偿
   重试次数: 一次最多打多少发
   重试间隔毫秒: 两发之间的间隔
   单次超时毫秒: 单次请求超时
-  补发模式: 设为 true 时，若当天放券时刻已过会立刻补打一次（用于白天测试）
+  补发模式: true 时若当天放券时刻已过会立刻补打一次（调试用）
+  持续抓取: 开关。true = 打开京东就持续抓取并刷新模板；false = 停止抓取
+  抓包匹配: 自定义哪个 URL 算领券动作（正则，留空用内置规则）
 
 env_schema:
   TARGET_HMS:
@@ -49,20 +51,36 @@ env_schema:
     options:
     - 'false'
     - 'true'
+  CAPTURE_ALWAYS:
+    name: 持续抓取
+    description: 打开即持续抓取领券请求，模板始终是最新鲜的
+    options:
+    - 'true'
+    - 'false'
+  CAPTURE_MATCH:
+    name: 抓包匹配
+    description: 自定义哪个 URL 算领券动作（正则，可留空）
+    default_value: ''
+  NOTIFY_THROTTLE_MS:
+    name: 通知节流(毫秒)
+    default_value: '60000'
 
 scriptings:
-  # 1) 自动抓包：你在京东App手动点一次「领取」，这里把真实请求存下来
+  # 1) 持续抓包：京东 App 有流量就抓，刷新模板里的签名
   - http_request:
       name: 烟台消费券-自动抓包
-      match: '^https?:\/\/[^/]*jd\.com\/.*'
+      match: '^https?://(api\.m|api|wq|pro\.m|m|coupon|msite|func)\.jd\.com/.*'
       script_url: '{{{脚本地址}}}'
       update_interval: 31536000
       timeout: 20
       body_required: true
       env:
+        CAPTURE_ALWAYS: '{{{持续抓取}}}'
+        CAPTURE_MATCH: '{{{抓包匹配}}}'
+        NOTIFY_THROTTLE_MS: '60000'
         TARGET_HMS: '{{{放券时刻}}}'
 
-  # 2) 定时重放：每分钟触发一次，脚本自己判断"是不是到点了"，到点就精确等待后发出
+  # 2) 定时重放：每分钟触发一次，脚本自己判断是否到点，到点精确等待后发出
   - schedule:
       name: 烟台消费券-定时抢券
       cron: '* * * * *'
@@ -77,12 +95,37 @@ scriptings:
         TIMEOUT_MS: '{{{单次超时毫秒}}}'
         CATCH_UP: '{{{补发模式}}}'
 
-  # 3) 状态小组件
+  # 3) 手动试跑：立刻发一次并回报结果（工具→脚本 里点它运行）
+  - generic:
+      name: 烟台消费券-试跑
+      script_url: '{{{脚本地址}}}'
+      update_interval: 31536000
+      timeout: 120
+      env:
+        SNIPE_MODE: 'manual'
+        TARGET_HMS: '{{{放券时刻}}}'
+        PREFIRE_MS: '{{{提前量毫秒}}}'
+        MAX_ROUNDS: '{{{重试次数}}}'
+        RETRY_MS: '{{{重试间隔毫秒}}}'
+        TIMEOUT_MS: '{{{单次超时毫秒}}}'
+
+  # 4) 开关：手动运行一次即可切换「持续抓取」开/关
+  - generic:
+      name: 烟台消费券-开关
+      script_url: '{{{脚本地址}}}'
+      update_interval: 31536000
+      timeout: 20
+      env:
+        CAPTURE_ALWAYS: '{{{持续抓取}}}'
+
+  # 5) 状态：小组件
   - generic:
       name: 烟台消费券-状态
       script_url: '{{{脚本地址}}}'
       update_interval: 31536000
       timeout: 20
+      env:
+        CAPTURE_ALWAYS: '{{{持续抓取}}}'
 
 widgets:
   - name: 烟台消费券-状态

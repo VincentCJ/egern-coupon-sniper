@@ -21,7 +21,8 @@ const load = (f) => readFileSync(join(scriptPath(), f), 'utf-8');
 const ROLE_NAME = {
   capture: '烟台消费券-自动抓包',
   snipe: '烟台消费券-定时抢券',
-  status: '烟台消费券-状态'
+  status: '烟台消费券-状态',
+  toggle: '烟台消费券-开关'
 };
 async function runScript(file, ctx, role) {
   const src = load(file)
@@ -318,6 +319,141 @@ console.log('\n[17] 状态模式 未抓包提示');
   const ctx = makeCtx({});
   const out = await runScript('coupon-sniper.js', ctx, 'status');
   check('提示手动点一次', out && JSON.stringify(out.children).includes('手动点一次'));
+}
+
+// ============ 18. 开关：默认开 -> 关 ============
+console.log('\n[18] 开关模式 切换持续抓取');
+{
+  const ctx = makeCtx({ env: { CAPTURE_ALWAYS: 'true' } });
+  await runScript('coupon-sniper.js', ctx, 'toggle');
+  const cfg = ctx.storage.getJSON('jd_coupon_sniper_cfg_v1');
+  check('首次切换为 off', cfg && cfg.capture === 'off', JSON.stringify(cfg));
+  check('通知告知已关闭', ctx._notifications[0] && /已关闭/.test(ctx._notifications[0].body));
+}
+
+// ============ 19. 开关：再切回开 ============
+console.log('\n[19] 开关模式 再次切换');
+{
+  const ctx = makeCtx({ env: { CAPTURE_ALWAYS: 'true' } });
+  ctx.storage.setJSON('jd_coupon_sniper_cfg_v1', { capture: 'off' });
+  await runScript('coupon-sniper.js', ctx, 'toggle');
+  const cfg = ctx.storage.getJSON('jd_coupon_sniper_cfg_v1');
+  check('切回 on', cfg && cfg.capture === 'on', JSON.stringify(cfg));
+}
+
+// ============ 20. 开关关闭时不再抓包 ============
+console.log('\n[20] 持续抓取 关闭后不抓包');
+{
+  const ctx = makeCtx({ request: makeReq('https://api.m.jd.com/client.action?functionId=govCouponReceive', 'body=1') });
+  ctx.storage.setJSON('jd_coupon_sniper_cfg_v1', { capture: 'off' });
+  await runScript('coupon-sniper.js', ctx, 'capture');
+  check('关闭时不写模板', !ctx.storage.getJSON('jd_coupon_sniper_v1'));
+  check('关闭时不通知', ctx._notifications.length === 0);
+}
+
+// ============ 21. 持续抓取会刷新模板（签名保鲜）============
+console.log('\n[21] 持续抓取 刷新模板');
+{
+  const ctx = makeCtx({ request: makeReq('https://api.m.jd.com/client.action?functionId=govCouponReceive&t=1', 'body=OLD') });
+  await runScript('coupon-sniper.js', ctx, 'capture');
+  const t1 = ctx.storage.getJSON('jd_coupon_sniper_v1');
+  check('首次抓到模板', !!t1 && /OLD/.test(t1.body || ''));
+
+  // 同一 functionId 再来一发更新的
+  const ctx2 = makeCtx({ request: makeReq('https://api.m.jd.com/client.action?functionId=govCouponReceive&t=2', 'body=NEW') });
+  ctx2.storage.setJSON('jd_coupon_sniper_v1', t1);
+  await runScript('coupon-sniper.js', ctx2, 'capture');
+  const t2 = ctx2.storage.getJSON('jd_coupon_sniper_v1');
+  check('模板被刷新为最新', !!t2 && /NEW/.test(t2.body || ''), t2 && t2.body);
+  check('functionId 被记录', !!t2 && t2.functionId === 'govCouponReceive');
+}
+
+// ============ 22. 通知节流 ============
+console.log('\n[22] 持续抓取 通知节流');
+{
+  const ctx = makeCtx({
+    env: { NOTIFY_THROTTLE_MS: '60000' },
+    request: makeReq('https://api.m.jd.com/client.action?functionId=govCouponReceive', 'body=1')
+  });
+  for (let i = 0; i < 5; i++) {
+    await runScript('coupon-sniper.js', ctx, 'capture');
+  }
+  check('多次抓取只通知一次', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
+}
+
+// ============ 23. 状态显示开关状态 ============
+console.log('\n[23] 状态模式 显示抓取开关');
+{
+  const ctx = makeCtx({ env: { CAPTURE_ALWAYS: 'true' } });
+  ctx.storage.setJSON('jd_coupon_sniper_cfg_v1', { capture: 'off' });
+  const out = await runScript('coupon-sniper.js', ctx, 'status');
+  check('显示为关', JSON.stringify(out.children).includes('持续抓取：关'));
+}
+
+// ============ 24. 抢券：还没到点时要有提示 ============
+console.log('\n[24] 抢券模式 未到点会提示已就位');
+{
+  const ctx = makeCtx({ env: { TARGET_HMS: '03:17:00' }, httpReply: { status: 200, body: '{"code":"0"}' } });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('有提示', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
+  check('提示包含放券时刻', ctx._notifications[0] && /03:17:00/.test(ctx._notifications[0].body),
+    ctx._notifications[0] && ctx._notifications[0].body);
+  check('没有发请求', ctx._calls.length === 0);
+}
+
+// ============ 25. 抢券：当天已完成会告知 ============
+console.log('\n[25] 抢券模式 当天已完成会告知');
+{
+  const ctx = makeCtx({ env: { TARGET_HMS: '00:00:00' }, httpReply: { status: 200, body: '{"code":"0"}' } });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  const d = new Date(); const p2 = (n) => String(n).padStart(2, '0');
+  ctx.storage.setJSON('jd_coupon_sniper_state_v1', {
+    date: d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()), success: true
+  });
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('有提示', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
+  check('说明不会重复发送', ctx._notifications[0] && /不会重复/.test(ctx._notifications[0].body),
+    ctx._notifications[0] && ctx._notifications[0].body);
+  check('没有发请求', ctx._calls.length === 0);
+}
+
+// ============ 26. 手动试跑：无视当天已完成，照发并回报 ============
+console.log('\n[26] 手动试跑 强制发出');
+{
+  const ctx = makeCtx({
+    env: { SNIPE_MODE: 'manual', MAX_ROUNDS: '2', RETRY_MS: '10' },
+    httpReply: { status: 200, body: '{"code":"0","msg":"领取成功"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  const d = new Date(); const p2 = (n) => String(n).padStart(2, '0');
+  ctx.storage.setJSON('jd_coupon_sniper_state_v1', {
+    date: d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()), success: true
+  });
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('照样发了请求', ctx._calls.length >= 1, '实际 ' + ctx._calls.length);
+  check('回报了结果', ctx._notifications.length >= 1);
+  check('结果提示含抢到', ctx._notifications.some((n) => /抢到/.test(n.body)),
+    JSON.stringify(ctx._notifications.map((n) => n.body)));
+}
+
+// ============ 27. 手动试跑：没有模板也要提示 ============
+console.log('\n[27] 手动试跑 缺模板时提示');
+{
+  const ctx = makeCtx({ env: { SNIPE_MODE: 'manual' } });
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('提示去手动抓包', ctx._notifications.length === 1 && /手动点一次/.test(ctx._notifications[0].body));
+}
+
+// ============ 28. 已就位提示按小时节流，不刷屏 ============
+console.log('\n[28] 未到点提示节流');
+{
+  const ctx = makeCtx({ env: { TARGET_HMS: '03:17:00' } });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  for (let i = 0; i < 5; i++) {
+    await runScript('coupon-sniper.js', ctx, 'snipe');
+  }
+  check('5 次只提示 1 次', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
 }
 
 console.log('\n———— ' + pass + ' 通过 / ' + fail + ' 失败 ————');
