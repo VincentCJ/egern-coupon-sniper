@@ -8,7 +8,7 @@ open_url: ''
 # 模块参数（Egern 模块页可直接改，改完立即生效）
 compat_arguments:
   # 脚本地址：默认指向本仓库 raw；换自己的仓库改这里
-  脚本地址: 'https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/coupon-sniper.js?v=4'
+  脚本地址: 'https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/coupon-sniper.js?v=5'
   放券时刻: '00:00:00'
   提前量毫秒: '0'
   突发发数: '12'
@@ -134,7 +134,7 @@ scriptings:
   - http_request:
       name: 烟台消费券-自动抓包
       match: '^https?://(api\.m|api|wq|pro\.m|m|coupon|msite|func)\.jd\.com/.*'
-      script_url: '{{{脚本地址}}}?v=4'
+      script_url: '{{{脚本地址}}}?v=5'
       update_interval: 86400
       timeout: 20
       body_required: true
@@ -149,7 +149,7 @@ scriptings:
   - schedule:
       name: 烟台消费券-定时抢券
       cron: '* * * * *'
-      script_url: '{{{脚本地址}}}?v=4'
+      script_url: '{{{脚本地址}}}?v=5'
       update_interval: 86400
       timeout: 300
       env:
@@ -173,7 +173,7 @@ scriptings:
   - schedule:
       name: 烟台消费券-睡前自检
       cron: '{{{睡前自检cron}}}'
-      script_url: '{{{脚本地址}}}?v=4'
+      script_url: '{{{脚本地址}}}?v=5'
       update_interval: 86400
       timeout: 60
       env:
@@ -186,7 +186,7 @@ scriptings:
   # 4) 手动试跑：立刻发一次并回报结果（工具→脚本 里点它运行）
   - generic:
       name: 烟台消费券-试跑
-      script_url: '{{{脚本地址}}}?v=4'
+      script_url: '{{{脚本地址}}}?v=5'
       update_interval: 86400
       timeout: 120
       env:
@@ -203,14 +203,14 @@ scriptings:
   # 5) 候选列表：诊断用，列出最近抓到的请求
   - generic:
       name: 烟台消费券-候选列表
-      script_url: '{{{脚本地址}}}?v=4'
+      script_url: '{{{脚本地址}}}?v=5'
       update_interval: 86400
       timeout: 20
 
   # 6) 开关：手动运行一次即可切换「持续抓取」开/关
   - generic:
       name: 烟台消费券-开关
-      script_url: '{{{脚本地址}}}?v=4'
+      script_url: '{{{脚本地址}}}?v=5'
       update_interval: 86400
       timeout: 20
       env:
@@ -219,7 +219,7 @@ scriptings:
   # 7) 状态：小组件
   - generic:
       name: 烟台消费券-状态
-      script_url: '{{{脚本地址}}}?v=4'
+      script_url: '{{{脚本地址}}}?v=5'
       update_interval: 86400
       timeout: 20
       env:

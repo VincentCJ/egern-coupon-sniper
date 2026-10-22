@@ -39,6 +39,7 @@
  */
 
 const TPL_KEY = 'jd_coupon_sniper_v1';
+const SNIPER_VERSION = 'v5';
 const STATE_KEY = 'jd_coupon_sniper_state_v1';
 const CAND_KEY = 'jd_coupon_sniper_cands_v1';
 const CFG_KEY = 'jd_coupon_sniper_cfg_v1';
