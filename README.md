@@ -24,11 +24,17 @@ Egern → 工具 → 证书 → 生成新证书 → 安装新证书。
 
 把下面链接里的 `<账号>` / `<仓库名>` 换成你自己的（或直接用仓库页面上的 Raw 地址）：
 
+**一键安装**（点开即可）：
+
 ```
-egern:/modules/new?name=烟台消费券定时抢券&url=https://raw.githubusercontent.com/<账号>/<仓库名>/main/egern/module-coupon.yaml
+egern:/modules/new?name=烟台消费券定时抢券&url=https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/module-coupon.yaml
 ```
 
 或手动：Egern → 工具 → 模块 → 右上角 **+** → 填模块 URL → 保存。
+
+```
+https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/module-coupon.yaml
+```
 
 ### 3. 抓一次包（只需做一次）
 
@@ -57,7 +63,7 @@ Egern → 工具 → 模块 → 点进模块 → 改「参数 / Env」：
 
 | 参数 | 说明 | 默认 |
 |---|---|---|
-| 脚本地址 | coupon-sniper.js 的 raw 地址 | 见模块内注释 |
+| 脚本地址 | coupon-sniper.js 的 raw 地址 | 已默认指向本仓库 |
 | 放券时刻 | 每天几点几分几秒发 | `00:00:00` |
 | 提前量毫秒 | 提前多少毫秒发（抵消网络延迟） | `50` |
 | 重试次数 | 一次最多打多少发 | `40` |
@@ -99,6 +105,7 @@ egern/
 ├── module-coupon.yaml  Egern 模块定义
 └── test/run-tests.js   36 项自测（Node 伪造 ctx）
 grab.py                 独立 Python 版（不需要 Egern）
+push.sh                 用 GITHUB_TOKEN 推送到 GitHub
 curl2template.py        cURL → 模板转换
 serve.sh                本地 HTTP 服务（给 Egern 拉脚本用）
 ```
