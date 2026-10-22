@@ -192,7 +192,7 @@ console.log('\n[8] snipe.js 缺模板提示');
 // ============ 9. snipe: 时刻已过且未开补发 ============
 console.log('\n[9] snipe.js 时刻已过且未开补发');
 {
-  const ctx = makeCtx({ env: { TARGET_HMS: '00:00:00' }, httpReply: { status: 200, body: '{"code":"0"}' } });
+  const ctx = makeCtx({ env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'false' }, httpReply: { status: 200, body: '{"code":"0"}' } });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   await runScript('coupon-sniper.js', ctx, 'snipe');
   check('未发请求', ctx._calls.length === 0);
@@ -269,7 +269,11 @@ console.log('\n[13] snipe.js 并发锁');
 // ============ 14. 非目标分钟直接返回（不空等）============
 console.log('\n[14] snipe.js 非目标分钟快速返回');
 {
-  const ctx = makeCtx({ env: { TARGET_HMS: '03:17:00' }, httpReply: { status: 200, body: '{"code":"0"}' } });
+  // 用明确还没到的时刻，确保走"未到点立即返回"分支
+  const tmr = new Date(Date.now() + 25 * 3600 * 1000);
+  const p4 = (n) => String(n).padStart(2, '0');
+  const hms = p4(tmr.getHours()) + ':' + p4(tmr.getMinutes()) + ':' + p4(tmr.getSeconds());
+  const ctx = makeCtx({ env: { TARGET_HMS: hms, RETRY_ALL_DAY: 'true' }, httpReply: { status: 200, body: '{"code":"0"}' } });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   const t0 = Date.now();
   await runScript('coupon-sniper.js', ctx, 'snipe');
@@ -393,11 +397,15 @@ console.log('\n[23] 状态模式 显示抓取开关');
 // ============ 24. 抢券：还没到点时要有提示 ============
 console.log('\n[24] 抢券模式 未到点会提示已就位');
 {
-  const ctx = makeCtx({ env: { TARGET_HMS: '03:17:00' }, httpReply: { status: 200, body: '{"code":"0"}' } });
+  // 用一个明确还没到的时刻（明天），确保走"未到点"分支
+  const tmr = new Date(Date.now() + 25 * 3600 * 1000);
+  const p3 = (n) => String(n).padStart(2, '0');
+  const hms = p3(tmr.getHours()) + ':' + p3(tmr.getMinutes()) + ':' + p3(tmr.getSeconds());
+  const ctx = makeCtx({ env: { TARGET_HMS: hms, RETRY_ALL_DAY: 'true' }, httpReply: { status: 200, body: '{"code":"0"}' } });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   await runScript('coupon-sniper.js', ctx, 'snipe');
   check('有提示', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
-  check('提示包含放券时刻', ctx._notifications[0] && /03:17:00/.test(ctx._notifications[0].body),
+  check('提示包含放券时刻', ctx._notifications[0] && ctx._notifications[0].body.includes(hms),
     ctx._notifications[0] && ctx._notifications[0].body);
   check('没有发请求', ctx._calls.length === 0);
 }
@@ -448,12 +456,80 @@ console.log('\n[27] 手动试跑 缺模板时提示');
 // ============ 28. 已就位提示按小时节流，不刷屏 ============
 console.log('\n[28] 未到点提示节流');
 {
-  const ctx = makeCtx({ env: { TARGET_HMS: '03:17:00' } });
+  const tmr = new Date(Date.now() + 25 * 3600 * 1000);
+  const p3 = (n) => String(n).padStart(2, '0');
+  const hms = p3(tmr.getHours()) + ':' + p3(tmr.getMinutes()) + ':' + p3(tmr.getSeconds());
+  const ctx = makeCtx({ env: { TARGET_HMS: hms, RETRY_ALL_DAY: 'true' } });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   for (let i = 0; i < 5; i++) {
     await runScript('coupon-sniper.js', ctx, 'snipe');
   }
   check('5 次只提示 1 次', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
+}
+
+// ============ 29. 全天补抢：间隔内不发 ============
+console.log('\n[29] 全天补抢 间隔内不重复打');
+{
+  const ctx = makeCtx({
+    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '15', MAX_ROUNDS: '1' },
+    httpReply: { status: 200, body: '{"code":"0002","echo":"券已抢完"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  // 第一次：已过放券时刻很久 -> 视为补抢轮，立刻打
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('第一轮发出', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+  // 第二轮：间隔未到 -> 不发
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('间隔内不再发', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+}
+
+// ============ 30. 全天补抢：间隔到了再发 ============
+console.log('\n[30] 全天补抢 间隔到点后再发');
+{
+  const ctx = makeCtx({
+    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '15', MAX_ROUNDS: '1' },
+    httpReply: { status: 200, body: '{"code":"0002","echo":"券已抢完"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  const d = new Date(); const p2 = (n) => String(n).padStart(2, '0');
+  ctx.storage.setJSON('jd_coupon_sniper_state_v1', {
+    date: d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()),
+    lastAttemptTs: Date.now() - 16 * 60 * 1000     // 16 分钟前
+  });
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('间隔已过 -> 补发一次', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+}
+
+// ============ 31. 补抢到点截止后停止 ============
+console.log('\n[31] 全天补抢 过了截止时间不再发');
+{
+  const ctx = makeCtx({
+    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '15', RETRY_UNTIL: '00:01', MAX_ROUNDS: '1' },
+    httpReply: { status: 200, body: '{"code":"0002"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  const d = new Date(); const p2 = (n) => String(n).padStart(2, '0');
+  ctx.storage.setJSON('jd_coupon_sniper_state_v1', {
+    date: d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()),
+    lastAttemptTs: Date.now() - 60 * 60 * 1000
+  });
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('截止后不发', ctx._calls.length === 0, '实际 ' + ctx._calls.length);
+}
+
+// ============ 32. 抢到后当天不再补抢 ============
+console.log('\n[32] 抢到后不再补抢');
+{
+  const ctx = makeCtx({
+    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '1', MAX_ROUNDS: '1' },
+    httpReply: { status: 200, body: '{"code":"0","msg":"领取成功"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  const n1 = ctx._calls.length;
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('成功后不再发', ctx._calls.length === n1, '实际 ' + ctx._calls.length);
+  check('状态为 success', ctx.storage.getJSON('jd_coupon_sniper_state_v1').success === true);
 }
 
 console.log('\n———— ' + pass + ' 通过 / ' + fail + ' 失败 ————');

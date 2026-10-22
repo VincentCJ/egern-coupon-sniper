@@ -17,6 +17,9 @@ compat_arguments:
   补发模式: 'false'
   持续抓取: 'true'
   抓包匹配: ''
+  全天补抢: 'true'
+  补抢间隔分钟: '15'
+  补抢截止: '23:00'
 
 compat_arguments_desc: |
   脚本地址: coupon-sniper.js 的 raw 地址
@@ -28,6 +31,9 @@ compat_arguments_desc: |
   补发模式: true 时若当天放券时刻已过会立刻补打一次（调试用）
   持续抓取: 开关。true = 打开京东就持续抓取并刷新模板；false = 停止抓取
   抓包匹配: 自定义哪个 URL 算领券动作（正则，留空用内置规则）
+  全天补抢: 官方规则是每日 00:00-23:59 全天发放且限量先到先得，true = 当天没抢到就按间隔继续补抢
+  补抢间隔分钟: 两次补抢之间隔多少分钟
+  补抢截止: 补抢到几点为止
 
 env_schema:
   TARGET_HMS:
@@ -61,6 +67,18 @@ env_schema:
     name: 抓包匹配
     description: 自定义哪个 URL 算领券动作（正则，可留空）
     default_value: ''
+  RETRY_ALL_DAY:
+    name: 全天补抢
+    description: 当天没抢到就按间隔继续补抢（官方全天发放，限量先到先得）
+    options:
+    - 'true'
+    - 'false'
+  RETRY_MINUTES:
+    name: 补抢间隔(分钟)
+    default_value: '15'
+  RETRY_UNTIL:
+    name: 补抢截止
+    default_value: '23:00'
   NOTIFY_THROTTLE_MS:
     name: 通知节流(毫秒)
     default_value: '60000'
@@ -94,6 +112,9 @@ scriptings:
         RETRY_MS: '{{{重试间隔毫秒}}}'
         TIMEOUT_MS: '{{{单次超时毫秒}}}'
         CATCH_UP: '{{{补发模式}}}'
+        RETRY_ALL_DAY: '{{{全天补抢}}}'
+        RETRY_MINUTES: '{{{补抢间隔分钟}}}'
+        RETRY_UNTIL: '{{{补抢截止}}}'
 
   # 3) 手动试跑：立刻发一次并回报结果（工具→脚本 里点它运行）
   - generic:
@@ -135,11 +156,13 @@ mitm:
   hostnames:
     includes:
     - api.m.jd.com
-    - m.jd.com
     - wq.jd.com
     - pro.m.jd.com
-    - '*.jd.com'
+    - coupon.m.jd.com
 
 http_captures:
   includes:
-  - '*.jd.com'
+  - api.m.jd.com
+  - wq.jd.com
+  - pro.m.jd.com
+  - coupon.m.jd.com
