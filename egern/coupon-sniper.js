@@ -213,6 +213,28 @@ async function modeSnipe(ctx) {
     return;
   }
 
+  // 睡前自检：只检查不抢券，趁用户还醒着提醒刷新模板
+  if (String(env.CHECK_ONLY || '').toLowerCase() === 'true') {
+    const ageMin = tpl.capturedAt ? Math.round((Date.now() - tpl.capturedAt) / MINUTE) : -1;
+    const staleLimit = num(env.STALE_MINUTES, 30);
+    // 同时预热一下连接，把 DNS/TCP/TLS 的开销挪到睡前
+    const rtt = await warmup(ctx, tpl, timeoutMs);
+    const stale = ageMin < 0 || ageMin > staleLimit;
+    const lines = [];
+    lines.push('放券时刻 ' + targetHms);
+    lines.push('模板抓取于 ' + (ageMin < 0 ? '未知' : ageMin + ' 分钟前'));
+    if (rtt > 0) lines.push('网络 RTT 约 ' + rtt + 'ms（已预热）');
+    if (stale) {
+      lines.push('⚠️ 模板可能已失效：');
+      lines.push('请现在打开京东 App 搜「烟台消费券」，点一次「领取」');
+      lines.push('（成功或失败都算，脚本会自动抓到最新请求刷新模板）。');
+    } else {
+      lines.push('✅ 模板还新鲜，今晚 0 点会自动抢，安心睡觉。');
+    }
+    ctx.notify({ title: '抢券睡前自检', body: lines.join('\n'), sound: true });
+    return;
+  }
+
   const state = (await ctx.storage.getJSON(STATE_KEY)) || {};
   const today = todayStr();
   const done = state.date === today && (state.success || state.already);

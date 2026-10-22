@@ -23,6 +23,8 @@ compat_arguments:
   全天补抢: 'false'
   补抢间隔分钟: '60'
   补抢截止: '23:00'
+  睡前自检cron: '30 21 * * *'
+  模板有效期分钟: '30'
 
 compat_arguments_desc: |
   脚本地址: coupon-sniper.js 的 raw 地址
@@ -41,6 +43,8 @@ compat_arguments_desc: |
   全天补抢: 仅当上一轮是「排队太挤」这类瞬态未果时才补抢；券已发完/已领过/成功都会当天停止
   补抢间隔分钟: 两次补抢之间隔多少分钟
   补抢截止: 补抢到几点为止
+  睡前自检cron: 睡前自检的 cron（默认每天 21:30）。建议设在你睡觉前 1 小时左右
+  模板有效期分钟: 模板超过多少分钟算可能过期
 
 env_schema:
   TARGET_HMS:
@@ -99,6 +103,12 @@ env_schema:
   RETRY_UNTIL:
     name: 补抢截止
     default_value: '23:00'
+  CHECK_AT:
+    name: 睡前自检cron
+    default_value: '30 21 * * *'
+  STALE_MINUTES:
+    name: 模板有效期(分钟)
+    default_value: '30'
   NOTIFY_THROTTLE_MS:
     name: 通知节流(毫秒)
     default_value: '60000'
@@ -140,7 +150,20 @@ scriptings:
         RETRY_MINUTES: '{{{补抢间隔分钟}}}'
         RETRY_UNTIL: '{{{补抢截止}}}'
 
-  # 3) 手动试跑：立刻发一次并回报结果（工具→脚本 里点它运行）
+  # 3) 睡前自检：趁人还醒着，检查模板是否还新鲜
+  - schedule:
+      name: 烟台消费券-睡前自检
+      cron: '{{{睡前自检cron}}}'
+      script_url: '{{{脚本地址}}}'
+      update_interval: 31536000
+      timeout: 60
+      env:
+        CHECK_ONLY: 'true'
+        TARGET_HMS: '{{{放券时刻}}}'
+        STALE_MINUTES: '{{{模板有效期分钟}}}'
+        TIMEOUT_MS: '{{{单次超时毫秒}}}'
+
+  # 4) 手动试跑：立刻发一次并回报结果（工具→脚本 里点它运行）
   - generic:
       name: 烟台消费券-试跑
       script_url: '{{{脚本地址}}}'
@@ -157,7 +180,7 @@ scriptings:
         RETRY_MS: '{{{重试间隔毫秒}}}'
         TIMEOUT_MS: '{{{单次超时毫秒}}}'
 
-  # 4) 开关：手动运行一次即可切换「持续抓取」开/关
+  # 5) 开关：手动运行一次即可切换「持续抓取」开/关
   - generic:
       name: 烟台消费券-开关
       script_url: '{{{脚本地址}}}'
@@ -166,7 +189,7 @@ scriptings:
       env:
         CAPTURE_ALWAYS: '{{{持续抓取}}}'
 
-  # 5) 状态：小组件
+  # 6) 状态：小组件
   - generic:
       name: 烟台消费券-状态
       script_url: '{{{脚本地址}}}'

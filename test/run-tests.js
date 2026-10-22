@@ -656,5 +656,38 @@ console.log('\n[38] 突发快 过后退避');
   check('突发结束后开始退避', gaps[3] > gaps[0], JSON.stringify(gaps));
 }
 
+// ============ 39. 睡前自检：模板过期会提醒刷新 ============
+console.log('\n[39] 睡前自检 过期提醒');
+{
+  const ctx = makeCtx({
+    env: { CHECK_ONLY: 'true', TARGET_HMS: '00:00:00', STALE_MINUTES: '30' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', {
+    method: 'POST', url: 'https://api.m.jd.com/x', headers: {}, body: 'b',
+    capturedAt: Date.now() - 60 * 60 * 1000      // 1 小时前
+  });
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('有自检通知', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
+  check('提示去点一次领取', ctx._notifications[0] && /点一次/.test(ctx._notifications[0].body),
+    ctx._notifications[0] && ctx._notifications[0].body);
+  check('自检不发领券请求', fires(ctx).length === 0, '实际 ' + fires(ctx).length);
+}
+
+// ============ 40. 睡前自检：模板新鲜则安心睡觉 ============
+console.log('\n[40] 睡前自检 新鲜模板');
+{
+  const ctx = makeCtx({
+    env: { CHECK_ONLY: 'true', TARGET_HMS: '00:00:00', STALE_MINUTES: '30' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', {
+    method: 'POST', url: 'https://api.m.jd.com/x', headers: {}, body: 'b',
+    capturedAt: Date.now() - 5 * 60 * 1000       // 5 分钟前
+  });
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('提示安心睡觉', ctx._notifications[0] && /安心睡觉/.test(ctx._notifications[0].body),
+    ctx._notifications[0] && ctx._notifications[0].body);
+  check('自检不发领券请求', fires(ctx).length === 0);
+}
+
 console.log('\n———— ' + pass + ' 通过 / ' + fail + ' 失败 ————');
 process.exit(fail ? 1 : 0);
