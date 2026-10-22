@@ -161,15 +161,17 @@ async function modeCapture(ctx) {
   const changed = !cur || cur.url !== picked.url || cur.body !== picked.body;
   await ctx.storage.setJSON(TPL_KEY, picked);
 
-  // 通知节流：只在"模板真正变了"且超过节流窗口时才提醒，避免刷屏
-  const throttle = num(env.NOTIFY_THROTTLE_MS, 60000);
+  // 通知：默认不打扰。模板刷新是后台行为，没必要每次都弹。
+  // 需要知道刷新情况时，把模块参数「抓包提醒」改成 true。
+  const verbose = String(env.CAPTURE_NOTIFY || '').toLowerCase() === 'true';
+  const throttle = num(env.NOTIFY_THROTTLE_MS, 3600000);
   const lastNotify = Number((await ctx.storage.getJSON(CFG_KEY + '_n')) || 0);
-  if (changed && Date.now() - lastNotify > throttle) {
+  if (verbose && changed && Date.now() - lastNotify > throttle) {
     await ctx.storage.setJSON(CFG_KEY + '_n', Date.now());
     const label = picked.functionId || host;
     ctx.notify({
       title: '领券模板已刷新',
-      body: label + ' — ' + new Date(picked.capturedAt).toLocaleTimeString() + ' 抓取，持续抓取已开启。',
+      body: label + ' — ' + new Date(picked.capturedAt).toLocaleTimeString() + ' 抓取。',
       sound: false
     });
   }
@@ -206,7 +208,7 @@ async function modeSnipe(ctx) {
 
   const tpl = await ctx.storage.getJSON(TPL_KEY);
   if (!tpl || !tpl.url) {
-    await notifyOnce(ctx, 'notpl', HOUR,
+    await notifyOnce(ctx, 'notpl', 86400000,
       '京东抢券',
       '还没有领券模板：请在京东 App 里手动点一次「领取」，脚本会自动抓包。',
       manual);
@@ -228,10 +230,13 @@ async function modeSnipe(ctx) {
       lines.push('⚠️ 模板可能已失效：');
       lines.push('请现在打开京东 App 搜「烟台消费券」，点一次「领取」');
       lines.push('（成功或失败都算，脚本会自动抓到最新请求刷新模板）。');
+      // 只有"有问题"才提醒；一切正常就安静睡觉
+      await notifyOnce(ctx, 'stale', 86400000, '抢券模板快过期了', lines.join('\n'), true);
     } else {
-      lines.push('✅ 模板还新鲜，今晚 0 点会自动抢，安心睡觉。');
+      if (String(env.NOTIFY_VERBOSE || '').toLowerCase() === 'true') {
+        ctx.notify({ title: '抢券睡前自检', body: lines.join('\n'), sound: false });
+      }
     }
-    ctx.notify({ title: '抢券睡前自检', body: lines.join('\n'), sound: true });
     return;
   }
 
@@ -239,8 +244,13 @@ async function modeSnipe(ctx) {
   const today = todayStr();
   const done = state.date === today && (state.success || state.already);
   if (done && !manual) {
-    await notifyOnce(ctx, 'done', HOUR, '京东消费券',
-      '今天已经处理过了（' + (state.success ? '已抢到' : '已领取') + '），不会重复发送。', false);
+    // 结果已经报过了就别再报第二次（否则每分钟重复提醒）
+    if (!state.resultNotified) {
+      await notifyOnce(ctx, 'done', 86400000, '京东消费券',
+        '今天已经处理过了（' + (state.success ? '已抢到' : '已领取') + '），不会重复发送。', false);
+      state.resultNotified = true;
+      await ctx.storage.setJSON(STATE_KEY, state);
+    }
     return;
   }
   if (state.date === today && state.lockTs && Date.now() - state.lockTs < 55000 && !manual) return;
@@ -282,16 +292,16 @@ async function modeSnipe(ctx) {
       const ageNote = (tplAge >= 0 && tplAge > 30)
         ? ' ⚠️ 模板已 ' + tplAge + ' 分钟没更新，建议现在打开京东App点一次领取刷新模板。'
         : '';
-      await notifyOnce(ctx, 'armed', HOUR, '京东消费券',
-        '定时抢券已就位，将在 ' + targetHms + ' 发出（还差 ' +
-        Math.round(lead / MINUTE) + ' 分钟）。' + ageNote, false);
+      if (String(env.NOTIFY_VERBOSE || '').toLowerCase() === 'true') {
+        await notifyOnce(ctx, 'armed', 86400000, '京东消费券',
+          '定时抢券已就位，将在 ' + targetHms + ' 发出（还差 ' +
+          Math.round(lead / MINUTE) + ' 分钟）。' + ageNote, false);
+      }
       return;
     }
     // 今天已有终态（成功/已领/券发完）—— 当天收工，不再发
     if (state.terminal) {
-      await notifyOnce(ctx, 'done', HOUR, '京东消费券',
-        '今天已经处理完了（' + (state.success ? '已抢到' : state.already ? '已领取' : '券已发完') +
-        '），不再重复发送。', false);
+      // 终态：结果已在上一轮报过，这里保持安静
       return;
     }
     // 刚打完一轮突发，避免同一分钟内重复触发
@@ -460,6 +470,8 @@ async function modeSnipe(ctx) {
     unknown: '❔ 返回无法判定，模板可能已失效，建议重新抓包'
   };
   const extra = manual ? '\n（手动试跑，已发 ' + attempts + ' 次）' : '';
+  state.resultNotified = true;
+  await ctx.storage.setJSON(STATE_KEY, state);
   ctx.notify({
     title: '京东消费券',
     body: (labels[lastResult] || lastResult) + extra,

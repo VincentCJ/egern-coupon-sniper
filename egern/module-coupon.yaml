@@ -25,6 +25,8 @@ compat_arguments:
   补抢截止: '23:00'
   睡前自检cron: '30 21 * * *'
   模板有效期分钟: '30'
+  详细通知: 'false'
+  抓包提醒: 'false'
 
 compat_arguments_desc: |
   脚本地址: coupon-sniper.js 的 raw 地址
@@ -45,6 +47,8 @@ compat_arguments_desc: |
   补抢截止: 补抢到几点为止
   睡前自检cron: 睡前自检的 cron（默认每天 21:30）。建议设在你睡觉前 1 小时左右
   模板有效期分钟: 模板超过多少分钟算可能过期
+  详细通知: true = 额外推送「已就位」等过程提示；false = 只报抢券结果
+  抓包提醒: true = 每次刷新模板都推送；false = 静默（默认）
 
 env_schema:
   TARGET_HMS:
@@ -109,6 +113,18 @@ env_schema:
   STALE_MINUTES:
     name: 模板有效期(分钟)
     default_value: '30'
+  NOTIFY_VERBOSE:
+    name: 详细通知
+    description: 额外推送「已就位」等过程提示
+    options:
+    - 'false'
+    - 'true'
+  CAPTURE_NOTIFY:
+    name: 抓包提醒
+    description: 每次刷新模板时推送
+    options:
+    - 'false'
+    - 'true'
   NOTIFY_THROTTLE_MS:
     name: 通知节流(毫秒)
     default_value: '60000'
@@ -125,8 +141,9 @@ scriptings:
       env:
         CAPTURE_ALWAYS: '{{{持续抓取}}}'
         CAPTURE_MATCH: '{{{抓包匹配}}}'
-        NOTIFY_THROTTLE_MS: '60000'
+        NOTIFY_THROTTLE_MS: '3600000'
         TARGET_HMS: '{{{放券时刻}}}'
+        CAPTURE_NOTIFY: '{{{抓包提醒}}}'
 
   # 2) 定时重放：每分钟触发一次，脚本自己判断是否到点，到点精确等待后发出
   - schedule:
@@ -149,6 +166,8 @@ scriptings:
         RETRY_ALL_DAY: '{{{全天补抢}}}'
         RETRY_MINUTES: '{{{补抢间隔分钟}}}'
         RETRY_UNTIL: '{{{补抢截止}}}'
+        NOTIFY_VERBOSE: '{{{详细通知}}}'
+        CAPTURE_NOTIFY: '{{{抓包提醒}}}'
 
   # 3) 睡前自检：趁人还醒着，检查模板是否还新鲜
   - schedule:
@@ -162,6 +181,7 @@ scriptings:
         TARGET_HMS: '{{{放券时刻}}}'
         STALE_MINUTES: '{{{模板有效期分钟}}}'
         TIMEOUT_MS: '{{{单次超时毫秒}}}'
+        NOTIFY_VERBOSE: '{{{详细通知}}}'
 
   # 4) 手动试跑：立刻发一次并回报结果（工具→脚本 里点它运行）
   - generic:

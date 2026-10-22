@@ -114,7 +114,7 @@ console.log('\n[1] capture.js 抓取真实请求');
   check('body 已抓到', tpl && /actId/.test(tpl.body || ''), String(tpl && tpl.body));
   check('Cookie 已保存', tpl && tpl.headers.Cookie.includes('pt_key'));
   check('无关请求头已过滤', tpl && !tpl.headers['X-Irrelevant']);
-  check('发了通知', ctx._notifications.length === 1);
+  check('默认不打扰（不通知）', ctx._notifications.length === 0, '实际 ' + ctx._notifications.length);
 }
 
 // ============ 2. capture 忽略非京东域名 ============
@@ -390,7 +390,7 @@ console.log('\n[21] 持续抓取 刷新模板');
 console.log('\n[22] 持续抓取 通知节流');
 {
   const ctx = makeCtx({
-    env: { NOTIFY_THROTTLE_MS: '60000' },
+    env: { NOTIFY_THROTTLE_MS: '60000', CAPTURE_NOTIFY: 'true' },
     request: makeReq('https://api.m.jd.com/client.action?functionId=govCouponReceive', 'body=1')
   });
   for (let i = 0; i < 5; i++) {
@@ -415,7 +415,7 @@ console.log('\n[24] 抢券模式 未到点会提示已就位');
   const tmr = new Date(Date.now() + 25 * 3600 * 1000);
   const p3 = (n) => String(n).padStart(2, '0');
   const hms = p3(tmr.getHours()) + ':' + p3(tmr.getMinutes()) + ':' + p3(tmr.getSeconds());
-  const ctx = makeCtx({ env: { TARGET_HMS: hms, RETRY_ALL_DAY: 'true' }, httpReply: { status: 200, body: '{"code":"0"}' } });
+  const ctx = makeCtx({ env: { TARGET_HMS: hms, RETRY_ALL_DAY: 'true', NOTIFY_VERBOSE: 'true' }, httpReply: { status: 200, body: '{"code":"0"}' } });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   await runScript('coupon-sniper.js', ctx, 'snipe');
   check('有提示', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
@@ -473,7 +473,7 @@ console.log('\n[28] 未到点提示节流');
   const tmr = new Date(Date.now() + 25 * 3600 * 1000);
   const p3 = (n) => String(n).padStart(2, '0');
   const hms = p3(tmr.getHours()) + ':' + p3(tmr.getMinutes()) + ':' + p3(tmr.getSeconds());
-  const ctx = makeCtx({ env: { TARGET_HMS: hms, RETRY_ALL_DAY: 'true' } });
+  const ctx = makeCtx({ env: { TARGET_HMS: hms, RETRY_ALL_DAY: 'true', NOTIFY_VERBOSE: 'true' } });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   for (let i = 0; i < 5; i++) {
     await runScript('coupon-sniper.js', ctx, 'snipe');
@@ -684,9 +684,71 @@ console.log('\n[40] 睡前自检 新鲜模板');
     capturedAt: Date.now() - 5 * 60 * 1000       // 5 分钟前
   });
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('提示安心睡觉', ctx._notifications[0] && /安心睡觉/.test(ctx._notifications[0].body),
-    ctx._notifications[0] && ctx._notifications[0].body);
+  check('模板正常时保持安静', ctx._notifications.length === 0, '实际 ' + ctx._notifications.length);
   check('自检不发领券请求', fires(ctx).length === 0);
+}
+
+// ============ 41. 通知收敛：抓包默认不打扰 ============
+console.log('\n[41] 抓包默认静默');
+{
+  const ctx = makeCtx({
+    request: makeReq('https://api.m.jd.com/client.action?functionId=govCouponReceive', 'body=1')
+  });
+  await runScript('coupon-sniper.js', ctx, 'capture');
+  check('抓包不发通知', ctx._notifications.length === 0, '实际 ' + ctx._notifications.length);
+  check('但模板已抓到', !!ctx.storage.getJSON('jd_coupon_sniper_v1'));
+}
+
+// ============ 42. 通知收敛：开了抓包提醒才通知 ============
+console.log('\n[42] 抓包提醒开关');
+{
+  const ctx = makeCtx({
+    env: { CAPTURE_NOTIFY: 'true' },
+    request: makeReq('https://api.m.jd.com/client.action?functionId=govCouponReceive', 'body=1')
+  });
+  await runScript('coupon-sniper.js', ctx, 'capture');
+  check('开启后有通知', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
+}
+
+// ============ 43. 通知收敛：抢到后不再每分钟重复提醒 ============
+console.log('\n[43] 结果只报一次');
+{
+  const ctx = makeCtx({
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '1' },
+    httpReply: { status: 200, body: '{"code":"0","msg":"领取成功"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  const n1 = ctx._notifications.length;
+  check('第一轮报结果', n1 === 1, '实际 ' + n1);
+  // 之后每分钟再跑，不该再报
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('后续不再重复提醒', ctx._notifications.length === n1, '实际 ' + ctx._notifications.length);
+}
+
+// ============ 44. 通知收敛：默认不报「已就位」============
+console.log('\n[44] 默认不报已就位');
+{
+  const tmr = new Date(Date.now() + 25 * 3600 * 1000);
+  const p5 = (n) => String(n).padStart(2, '0');
+  const hms = p5(tmr.getHours()) + ':' + p5(tmr.getMinutes()) + ':' + p5(tmr.getSeconds());
+  const ctx = makeCtx({ env: { TARGET_HMS: hms, RETRY_ALL_DAY: 'true' } });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('默认无通知', ctx._notifications.length === 0, '实际 ' + ctx._notifications.length);
+}
+
+// ============ 45. 睡前自检：正常时保持安静 ============
+console.log('\n[45] 睡前自检 正常时安静');
+{
+  const ctx = makeCtx({ env: { CHECK_ONLY: 'true', TARGET_HMS: '00:00:00', STALE_MINUTES: '30' } });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', {
+    method: 'POST', url: 'https://api.m.jd.com/x', headers: {}, body: 'b',
+    capturedAt: Date.now() - 5 * 60 * 1000
+  });
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  check('模板正常时无通知', ctx._notifications.length === 0, '实际 ' + ctx._notifications.length);
 }
 
 console.log('\n———— ' + pass + ' 通过 / ' + fail + ' 失败 ————');
