@@ -10,8 +10,11 @@ compat_arguments:
   # 脚本地址：默认指向本仓库 raw；换自己的仓库改这里
   脚本地址: 'https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/coupon-sniper.js'
   放券时刻: '00:00:00'
-  提前量毫秒: '50'
-  重试次数: '40'
+  提前量毫秒: '0'
+  突发发数: '12'
+  突发间隔毫秒: '50'
+  并发发数: '2'
+  重试次数: '30'
   重试间隔毫秒: '250'
   单次超时毫秒: '6000'
   补发模式: 'false'
@@ -24,7 +27,11 @@ compat_arguments:
 compat_arguments_desc: |
   脚本地址: coupon-sniper.js 的 raw 地址
   放券时刻: 每天几点几分几秒发请求（一般 00:00:00）
-  提前量毫秒: 提前多少毫秒发出，用网络延迟补偿
+  提前量毫秒: 0 = 按实测 RTT 自动算提前量（推荐）；填固定值则强制
+  突发发数: 密集突发阶段打多少发
+  突发间隔毫秒: 密集突发阶段每发间隔
+  并发发数: 放券瞬间并发发几发（1=串行，2~3 更快但更易触发风控）
+  重试次数: 单次唤醒最多打多少发
   重试次数: 一次最多打多少发
   重试间隔毫秒: 两发之间的间隔
   单次超时毫秒: 单次请求超时
@@ -42,10 +49,23 @@ env_schema:
     default_value: '00:00:00'
   PREFIRE_MS:
     name: 提前量(毫秒)
+    description: 0 = 按实测 RTT 自动计算
+    default_value: '0'
+  BURST_COUNT:
+    name: 突发发数
+    default_value: '12'
+  BURST_GAP_MS:
+    name: 突发间隔(毫秒)
     default_value: '50'
+  BURST_LEAD_MS:
+    name: 准备提前量(毫秒)
+    default_value: '3000'
+  PARALLEL:
+    name: 并发发数
+    default_value: '2'
   MAX_ROUNDS:
-    name: 重试次数
-    default_value: '40'
+    name: 单次最多发数
+    default_value: '30'
   RETRY_MS:
     name: 重试间隔(毫秒)
     default_value: '250'
@@ -108,6 +128,10 @@ scriptings:
       env:
         TARGET_HMS: '{{{放券时刻}}}'
         PREFIRE_MS: '{{{提前量毫秒}}}'
+        BURST_COUNT: '{{{突发发数}}}'
+        BURST_GAP_MS: '{{{突发间隔毫秒}}}'
+        BURST_LEAD_MS: '3000'
+        PARALLEL: '{{{并发发数}}}'
         MAX_ROUNDS: '{{{重试次数}}}'
         RETRY_MS: '{{{重试间隔毫秒}}}'
         TIMEOUT_MS: '{{{单次超时毫秒}}}'
@@ -126,6 +150,9 @@ scriptings:
         SNIPE_MODE: 'manual'
         TARGET_HMS: '{{{放券时刻}}}'
         PREFIRE_MS: '{{{提前量毫秒}}}'
+        BURST_COUNT: '{{{突发发数}}}'
+        BURST_GAP_MS: '{{{突发间隔毫秒}}}'
+        PARALLEL: '{{{并发发数}}}'
         MAX_ROUNDS: '{{{重试次数}}}'
         RETRY_MS: '{{{重试间隔毫秒}}}'
         TIMEOUT_MS: '{{{单次超时毫秒}}}'

@@ -176,20 +176,31 @@ async function modeCapture(ctx) {
 }
 
 // ============================ 抢券模式 ============================
+// 现实前提：券基本 0 点就抢完，所以胜负只在放券时刻的那一两秒。
+// 因此策略是「预热 + 密集突发」，而不是「失败了就慢慢重试」：
+//   1. 提前预热：先打一发到同一 host，测出真实 RTT，并让 DNS/TCP/TLS 就绪
+//   2. 提前量自适应：按测得的 RTT 提前发送，让请求"到达"服务器时正好是放券瞬间
+//   3. 密集突发：开头几发间隔很短（默认 50ms），确认是瞬态后才退避
+//   4. 终态即停：成功 / 已领 / 券发完 —— 立刻收手，不浪费请求
+//   5. 瞬态才续：排队太挤 / 网络错 —— 才值得再打
 async function modeSnipe(ctx) {
   const env = ctx.env || {};
   const timeoutMs = num(env.TIMEOUT_MS, 6000);
-  const maxRounds = num(env.MAX_ROUNDS, 40);
+  const maxRounds = num(env.MAX_ROUNDS, 30);
   const retryMs = num(env.RETRY_MS, 250);
-  const preFireMs = num(env.PREFIRE_MS, 50);
+  const preFireOverride = num(env.PREFIRE_MS, 0);   // 0 = 按实测 RTT 自动
+  const burstCount = num(env.BURST_COUNT, 12);
+  const burstGapMs = num(env.BURST_GAP_MS, 50);
+  const burstLeadMs = num(env.BURST_LEAD_MS, 3000);  // 距放券点多久开始准备
+  const parallel = Math.max(1, num(env.PARALLEL, 2)); // 同一瞬间并发几发
   const catchUp = String(env.CATCH_UP || '').toLowerCase() === 'true';
   const manual = String(env.SNIPE_MODE || '').toLowerCase() === 'manual';
   const retryAllDay = String(env.RETRY_ALL_DAY || 'false').toLowerCase() === 'true';
   const retryMinutes = num(env.RETRY_MINUTES, 60);
   const retryUntil = String(env.RETRY_UNTIL || '23:00');
   const targetHms = String(env.TARGET_HMS || '00:00:00');
-  const LATE_GRACE = 120000;    // 迟到 2 分钟内仍算"赶上"，立刻补发
-  const MAX_LEAD = 90000;       // 目标在 90 秒内才值得等
+  const LATE_GRACE = 120000;    // 迟到 2 分钟内仍算"赶上"
+  const MAX_LEAD = 90000;       // 距放券点 90 秒内才进入准备阶段
   const HOUR = 3600000;
   const MINUTE = 60000;
 
@@ -202,14 +213,12 @@ async function modeSnipe(ctx) {
     return;
   }
 
-  // 幂等 + 并发锁
   const state = (await ctx.storage.getJSON(STATE_KEY)) || {};
   const today = todayStr();
   const done = state.date === today && (state.success || state.already);
   if (done && !manual) {
     await notifyOnce(ctx, 'done', HOUR, '京东消费券',
-      '今天已经处理过了（' + (state.success ? '已抢到' : '已领取') +
-      '），不会重复发送。', false);
+      '今天已经处理过了（' + (state.success ? '已抢到' : '已领取') + '），不会重复发送。', false);
     return;
   }
   if (state.date === today && state.lockTs && Date.now() - state.lockTs < 55000 && !manual) return;
@@ -222,14 +231,11 @@ async function modeSnipe(ctx) {
     state.empty = false;
     state.attemptsTotal = 0;
     state.lastAttemptTs = 0;
+    state.burstFiredTs = 0;
   }
 
-  // 目标时刻
-  // 逻辑：放券时刻是「今天几点几分几秒」。当天的那个时刻过了之后，
-  // 如果开启了全天补抢，就把目标改成"现在"（立刻补打一轮），
-  // 而不是推到明天 —— 否则补抢永远轮不到。
+  // ---------------- 目标时刻 ----------------
   let target;
-  let pastTarget = false;
   if (manual || catchUp) {
     target = Date.now();
   } else {
@@ -238,55 +244,63 @@ async function modeSnipe(ctx) {
     cand.setHours(num(seg[0], 0), num(seg[1], 0), num(seg[2], 0), 0);
     const late = Date.now() - cand.getTime();
     if (late > 0) {
-      // 已经过了放券时刻
       if (late <= LATE_GRACE) {
-        target = cand.getTime();       // 刚过，赶上这一轮
+        target = cand.getTime();
       } else if (retryAllDay) {
-        target = Date.now();            // 当天补抢：立刻打
-        pastTarget = true;
+        target = Date.now();
       } else {
-        target = cand.getTime() + 86400000;  // 不补抢，等明天
+        target = cand.getTime() + 86400000;
       }
     } else {
       target = cand.getTime();
     }
     const lead = target - Date.now();
     if (lead > MAX_LEAD) {
-      // 还没到放券点：明确回报一次（每天一次），之后安静等待
+      const tplAge = tpl.capturedAt ? Math.round((Date.now() - tpl.capturedAt) / MINUTE) : -1;
+      const ageNote = (tplAge >= 0 && tplAge > 30)
+        ? ' ⚠️ 模板已 ' + tplAge + ' 分钟没更新，建议现在打开京东App点一次领取刷新模板。'
+        : '';
       await notifyOnce(ctx, 'armed', HOUR, '京东消费券',
         '定时抢券已就位，将在 ' + targetHms + ' 发出（还差 ' +
-        Math.round(lead / MINUTE) + ' 分钟）。模板已就绪，抢不到会自动补抢。', false);
+        Math.round(lead / MINUTE) + ' 分钟）。' + ageNote, false);
       return;
     }
-  }
-
-  // 全天补抢：只有「瞬态未果」（排队/网络错）才值得再来一轮；
-  // 如果上一轮已经是终态（券发完 / 已领过 / 成功），当天不再打。
-  const isFirstRoundOfDay = !state.lastAttemptTs;
-  if (!manual && !catchUp && retryAllDay) {
-    if (!isFirstRoundOfDay && state.terminal) return;   // 终态：当天收工
-    const last = Number(state.lastAttemptTs || 0);
-    const since = Date.now() - last;
-    if (!isFirstRoundOfDay && since < retryMinutes * MINUTE) {
-      return;                                   // 还没到下一次补抢时间
+    // 今天已有终态（成功/已领/券发完）—— 当天收工，不再发
+    if (state.terminal) {
+      await notifyOnce(ctx, 'done', HOUR, '京东消费券',
+        '今天已经处理完了（' + (state.success ? '已抢到' : state.already ? '已领取' : '券已发完') +
+        '），不再重复发送。', false);
+      return;
     }
-    // 补抢截止时间
-    const upTo = (() => {
-      const s = retryUntil.split(':');
-      const d = new Date();
-      d.setHours(num(s[0], 23), num(s[1], 0), 0, 0);
-      return d.getTime();
-    })();
-    if (Date.now() > upTo) return;              // 今天的补抢窗口已过
+    // 刚打完一轮突发，避免同一分钟内重复触发
+    if (state.burstFiredTs && Date.now() - state.burstFiredTs < 5000) return;
   }
 
   state.lockTs = Date.now();
   await ctx.storage.setJSON(STATE_KEY, state);
 
+  // ---------------- 预热 + 测 RTT ----------------
+  // 目的：让 DNS/TCP/TLS 在放券前就绪，并拿到真实 RTT 用于算提前量。
+  let rttMs = Number(state.rttMs || 0);
+  if (!manual) {
+    const warm = await warmup(ctx, tpl, timeoutMs);
+    if (warm > 0) {
+      rttMs = warm;
+      state.rttMs = warm;
+      state.warmTs = Date.now();
+      await ctx.storage.setJSON(STATE_KEY, state);
+    }
+  }
+  // 提前量：按实测 RTT 抵消网络延迟，让请求"到达"服务器时正好是放券瞬间
+  const preFireMs = preFireOverride > 0
+    ? preFireOverride
+    : Math.min(Math.max(rttMs || 50, 20), 300);
+
   if (manual) {
     ctx.notify({ title: '京东消费券', body: '手动试跑中…', sound: false });
   }
 
+  // ---------------- 发包 ----------------
   async function fire() {
     const headers = {};
     for (const k in (tpl.headers || {})) headers[k] = tpl.headers[k];
@@ -311,12 +325,11 @@ async function modeSnipe(ctx) {
   }
 
   // 按京东领券接口的真实返回语义分类
-  //   success  = 抢到了（code=0 且 subCode 命中 A1|B1，或文案明确写成功）
-  //   already  = 你今天已经领过这一类（同一张券每日限领 1 次）
-  //   empty    = 券确实发完了 —— 终态，继续打没有意义，立即停
-  //   crowded  = 排队太挤 / 服务繁忙 —— 瞬态，值得稍后再试
-  //   error    = 网络或超时 —— 瞬态，值得重试
-  // 关键：empty 与 crowded 必须分开，这决定了要不要继续重试。
+  //   success  = 抢到了（code=0 且 subCode 命中 A1|B1）
+  //   already  = 今天已领过这一类
+  //   empty    = 券确实发完了 —— 终态，继续打没有意义
+  //   crowded  = 排队太挤 / 繁忙 —— 瞬态，值得稍后再试
+  //   error    = 网络或超时 —— 瞬态
   function classify(text) {
     const raw = text || '';
     let code = null, subCode = null, msg = raw;
@@ -328,61 +341,90 @@ async function modeSnipe(ctx) {
     } catch (_) { /* 非 JSON，按文案判定 */ }
     msg = String(msg);
 
-    // 成功：code=0 且 subCode 以 A1/B1 结尾（京东前端就是这么判的）
     if (code === '0' && subCode && /A1|B1/.test(subCode)) return 'success';
-    if (/领取成功|领券成功|领取到|抢到券|领取成功!/.test(msg)) return 'success';
+    if (/领取成功|领券成功|领取到|抢到券/.test(msg)) return 'success';
     if (/"success"\s*[:=]\s*true/.test(raw)) return 'success';
 
-    // 终态：已经领过（同一类券每日限 1 次）
     if (/已领取|已参与|重复领取|超过限领|不可重复|已抢过|已经领取/.test(msg)) return 'already';
 
-    // 终态：券发完了 —— 继续打没有意义
     const emptyKw = (env.EMPTY_KEYWORDS
       ? env.EMPTY_KEYWORDS.split(',')
       : ['已抢完', '抢完', '已领完', '无库存', '库存不足', '已售罄', '售罄',
          '名额已满', '额度已满', '已达上限', '券已发完', '发放完毕', '已被领完']);
     for (const k of emptyKw) { if (k && msg.indexOf(k) >= 0) return 'empty'; }
 
-    // 瞬态：排队 / 繁忙 —— 值得稍后再试（京东原文：休息一会儿再试试吧）
+    // 还没开始 —— 瞬态，不能当终态（否则会误判成"券没了"而提前收手）
+    const earlyKw = ['未开始', '未到时间', '活动未开始', '尚未开始', '不在活动时间', '已结束'];
+    for (const k of earlyKw) { if (k && msg.indexOf(k) >= 0) return 'early'; }
+
     if (code === '601') return 'crowded';
     const crowdKw = (env.CROWDED_KEYWORDS
       ? env.CROWDED_KEYWORDS.split(',')
       : ['排队', '人太多', '太挤', '拥挤', '休息一会', '稍后', '繁忙', '请重试']);
     for (const k of crowdKw) { if (k && msg.indexOf(k) >= 0) return 'crowded'; }
 
-    if (code === '0' && !subCode) return 'success';   // 老接口只回 code=0
+    if (code === '0' && !subCode) return 'success';
     return 'unknown';
   }
 
+  const TERMINAL = ['success', 'already', 'empty'];
   let lastText = '';
   let lastResult = 'unknown';
   let attempts = 0;
-  for (let i = 0; i < maxRounds; i++) {
-    const wait = target - Date.now() - preFireMs;
-    if (wait > 0) await waitUntil(target - preFireMs);
+  let bestStatus = 0;
 
-    const r = await fire();
-    attempts++;
-    lastText = r.text || '';
-    lastResult = r.ok ? classify(lastText) : 'error';
-
-    // success / already / empty 都是终态：不再重发
-    // empty（券发完了）尤其要立刻停，继续打纯属浪费且容易触发风控
-    if (lastResult === 'success' || lastResult === 'already' || lastResult === 'empty') break;
-    // crowded / error / unknown 是瞬态：退避后继续
-    if (i < maxRounds - 1) {
-      const backoff = Math.min(retryMs * Math.pow(1.6, i), 4000);
-      await sleep(backoff + Math.floor(Math.random() * 80));
+  // 并发突发：同一瞬间发 N 发，谁先到服务器算谁的
+  async function burst() {
+    const n = Math.min(parallel, maxRounds);
+    const rs = await Promise.all(Array.from({ length: n }, () => fire()));
+    attempts += n;
+    for (const r of rs) {
+      const res = r.ok ? classify(r.text || '') : 'error';
+      if (r.ok && r.status) bestStatus = r.status;
+      if (res === 'success') { lastResult = 'success'; lastText = r.text || ''; return 'success'; }
+      if (res === 'already') { lastResult = 'already'; lastText = r.text || ''; return 'already'; }
+      if (res === 'empty') { lastResult = 'empty'; lastText = r.text || ''; return 'empty'; }
+      if (res === 'crowded' || res === 'early') { lastResult = res; lastText = r.text || ''; }
+      if (!lastText) lastText = r.text || '';
     }
+    return lastResult;
   }
 
+  // ---------------- 主循环 ----------------
+  for (let i = 0; i < maxRounds; i++) {
+    if (i === 0) {
+      const wait = target - Date.now() - preFireMs;
+      if (wait > 0) await waitUntil(target - preFireMs);
+    } else {
+      const gap = (i - 1 < burstCount)
+        ? burstGapMs
+        : Math.min(retryMs * Math.pow(1.6, i - 1 - burstCount), 4000);
+      await sleep(gap + Math.floor(Math.random() * 40));
+    }
+
+    let res;
+    if (i === 0 && parallel > 1) {
+      res = await burst();
+    } else {
+      const r = await fire();
+      attempts++;
+      lastText = r.text || '';
+      res = r.ok ? classify(lastText) : 'error';
+      if (r.ok && r.status) bestStatus = r.status;
+      lastResult = res;
+    }
+
+    if (TERMINAL.indexOf(res) >= 0) { lastResult = res; break; }
+  }
+
+  // ---------------- 落盘 + 通知 ----------------
   state[lastResult] = true;
-  // terminal = 终态（成功/已领/券发完），当天不必再补抢
-  state.terminal = (lastResult === 'success' || lastResult === 'already' || lastResult === 'empty');
+  state.terminal = TERMINAL.indexOf(lastResult) >= 0;
   state.ts = Date.now();
   state.attempts = attempts;
   state.attemptsTotal = Number(state.attemptsTotal || 0) + attempts;
   state.lastAttemptTs = Date.now();
+  state.burstFiredTs = Date.now();
   state.trace = lastText.slice(0, 300);
   await ctx.storage.setJSON(STATE_KEY, state);
 
@@ -390,7 +432,8 @@ async function modeSnipe(ctx) {
     success: '✅ 抢到了！去京东App「我的-优惠券」确认（券当天有效）',
     already: 'ℹ️ 今日已领取 / 已达上限',
     empty: '😵 券已发完（当天不再重试）',
-    crowded: '🔄 排队太挤，未抢到（会按间隔再试）',
+    crowded: '🔄 排队太挤，未抢到',
+    early: '⏰ 还没到放券时刻',
     error: '⚠️ 请求失败（网络 / 签名 / 风控），详见状态里的 trace',
     unknown: '❔ 返回无法判定，模板可能已失效，建议重新抓包'
   };
@@ -400,6 +443,20 @@ async function modeSnipe(ctx) {
     body: (labels[lastResult] || lastResult) + extra,
     sound: true
   });
+}
+
+// 预热：打一发到同一 host（不涉及领券），顺便测 RTT
+async function warmup(ctx, tpl, timeoutMs) {
+  try {
+    let origin = '';
+    try { origin = new URL(tpl.url).origin; } catch (_) { return 0; }
+    if (!origin) return 0;
+    const t0 = Date.now();
+    await ctx.http.get(origin + '/', { timeout: Math.min(timeoutMs, 3000), redirect: 'manual' });
+    return Date.now() - t0;
+  } catch (_) {
+    return 0;
+  }
 }
 
 // ============================ 开关模式 ============================

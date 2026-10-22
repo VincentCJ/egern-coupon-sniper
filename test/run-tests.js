@@ -54,13 +54,25 @@ function makeCtx(opts = {}) {
     },
     notify: (o) => notifications.push(o),
     http: {
-      get: async (url, o) => { calls.push({ m: 'GET', url, o, at: Date.now() }); return resp(opts.httpReply || { status: 200, body: '{"code":"0"}' }); },
-      post: async (url, o) => { calls.push({ m: 'POST', url, o, at: Date.now() }); return resp(opts.httpReply || { status: 200, body: '{"code":"0"}' }); }
+      get: async (url, o) => {
+        const isFire = url === 'https://api.m.jd.com/x';
+        calls.push({ m: 'GET', url, o, at: Date.now(), fire: isFire });
+        return resp(isFire ? (opts.httpReply || { status: 200, body: '{"code":"0"}' })
+                           : { status: 200, body: 'warmup' });
+      },
+      post: async (url, o) => {
+        const isFire = url === 'https://api.m.jd.com/x';
+        calls.push({ m: 'POST', url, o, at: Date.now(), fire: isFire });
+        return resp(isFire ? (opts.httpReply || { status: 200, body: '{"code":"0"}' })
+                           : { status: 200, body: 'warmup' });
+      }
     },
     _store: store, _notifications: notifications, _calls: calls
   };
   return ctx;
 }
+// 只统计真正的领券请求（排除预热）
+function fires(ctx) { return ctx._calls.filter((c) => c.fire); }
 function resp(r) {
   return { status: r.status, headers: new Map(), text: async () => r.body, json: async () => JSON.parse(r.body) };
 }
@@ -86,6 +98,7 @@ function check(name, cond, extra = '') {
   else { fail++; console.log('  ❌ ' + name + (extra ? ' — ' + extra : '')); }
 }
 const SEED = { method: 'POST', url: 'https://api.m.jd.com/x', headers: { Cookie: 'a=b' }, body: 'body=1' };
+const FIRE_URL = SEED.url;
 
 // ============ 1. capture ============
 console.log('\n[1] capture.js 抓取真实请求');
@@ -126,13 +139,13 @@ console.log('\n[3] capture.js 忽略无特征 GET');
 console.log('\n[4] snipe.js 领取成功');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', MAX_ROUNDS: '5' },
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '5' },
     httpReply: { status: 200, body: '{"code":"0","msg":"领取成功"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   await runScript('coupon-sniper.js', ctx, 'snipe');
   const st = ctx.storage.getJSON('jd_coupon_sniper_state_v1');
-  check('只发一次就停', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+  check('只发一次就停', fires(ctx).length === 1, '实际 ' + fires(ctx).length);
   check('状态标记 success', st && st.success === true, JSON.stringify(st));
   check('通知提示已抢到', ctx._notifications[0] && /抢到/.test(ctx._notifications[0].body));
 }
@@ -141,7 +154,7 @@ console.log('\n[4] snipe.js 领取成功');
 console.log('\n[5] snipe.js 识别 0001 已领取');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', MAX_ROUNDS: '5' },
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '5' },
     httpReply: { status: 200, body: '{"code":"0001","echo":"您今日已领取"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
@@ -149,20 +162,20 @@ console.log('\n[5] snipe.js 识别 0001 已领取');
   const st = ctx.storage.getJSON('jd_coupon_sniper_state_v1');
   check('状态标记 already', st && st.already === true, JSON.stringify(st));
   check('没有误判为 success', st && st.success !== true);
-  check('只发一次', ctx._calls.length === 1);
+  check('只发一次', fires(ctx).length === 1);
 }
 
 // ============ 6. snipe: 抢完 -> 终态，立即停（不浪费请求）============
 console.log('\n[6] snipe.js 券已抢完立即停止');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', MAX_ROUNDS: '4', RETRY_MS: '10' },
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '4', RETRY_MS: '10' },
     httpReply: { status: 200, body: '{"code":"0002","echo":"券已抢完"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   await runScript('coupon-sniper.js', ctx, 'snipe');
   const st = ctx.storage.getJSON('jd_coupon_sniper_state_v1');
-  check('终态只打一发就停', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+  check('终态只打一发就停', fires(ctx).length === 1, '实际 ' + fires(ctx).length);
   check('状态标记 empty', st && st.empty === true, JSON.stringify(st));
   check('没有误判为 success', st && st.success !== true);
   check('标记终态', st && st.terminal === true);
@@ -178,7 +191,7 @@ console.log('\n[7] snipe.js 当天幂等');
     date: d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()), success: true
   });
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('已成功则不再发请求', ctx._calls.length === 0, '实际 ' + ctx._calls.length);
+  check('已成功则不再发请求', fires(ctx).length === 0, '实际 ' + fires(ctx).length);
 }
 
 // ============ 8. snipe: 无模板 ============
@@ -187,7 +200,7 @@ console.log('\n[8] snipe.js 缺模板提示');
   const ctx = makeCtx({ env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true' } });
   await runScript('coupon-sniper.js', ctx, 'snipe');
   check('提示去手动抓包', ctx._notifications.length === 1 && /手动点一次/.test(ctx._notifications[0].body));
-  check('没有发请求', ctx._calls.length === 0);
+  check('没有发请求', fires(ctx).length === 0);
 }
 
 // ============ 9. snipe: 时刻已过且未开补发 ============
@@ -196,7 +209,7 @@ console.log('\n[9] snipe.js 时刻已过且未开补发');
   const ctx = makeCtx({ env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'false' }, httpReply: { status: 200, body: '{"code":"0"}' } });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('未发请求', ctx._calls.length === 0);
+  check('未发请求', fires(ctx).length === 0);
 }
 
 // ============ 10. 定时精度（跨秒等待）============
@@ -249,7 +262,7 @@ console.log('\n[12] snipe.js 迟到补发');
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   const t0 = Date.now();
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('迟到时仍然补发了一次', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+  check('迟到时仍然补发了一次', fires(ctx).length === 1, '实际 ' + fires(ctx).length);
   check('补发没有干等', Date.now() - t0 < 1500, (Date.now() - t0) + 'ms');
 }
 
@@ -264,7 +277,7 @@ console.log('\n[13] snipe.js 并发锁');
     lockTs: Date.now()
   });
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('上一轮在跑时不重复发', ctx._calls.length === 0, '实际 ' + ctx._calls.length);
+  check('上一轮在跑时不重复发', fires(ctx).length === 0, '实际 ' + fires(ctx).length);
 }
 
 // ============ 14. 非目标分钟直接返回（不空等）============
@@ -279,7 +292,7 @@ console.log('\n[14] snipe.js 非目标分钟快速返回');
   const t0 = Date.now();
   await runScript('coupon-sniper.js', ctx, 'snipe');
   check('立即返回', Date.now() - t0 < 500, (Date.now() - t0) + 'ms');
-  check('没有发请求', ctx._calls.length === 0);
+  check('没有发请求', fires(ctx).length === 0);
 }
 
 // ============ 15. 目标在 60 秒后 -> 等到点再发 ============
@@ -298,14 +311,14 @@ console.log('\n[15] snipe.js 跨分钟等待');
   await runScript('coupon-sniper.js', ctx, 'snipe');
   const drift = Math.abs(Date.now() - target.getTime());
   check('等待了约 60s 后准时发', drift < 150, '误差 ' + drift + 'ms');
-  check('确实发了一次', ctx._calls.length === 1);
+  check('确实发了一次', fires(ctx).length === 1);
   console.log('     实测误差 ' + drift + 'ms，总耗时 ' + (Date.now() - t0) + 'ms');
 }
 
 // ============ 16. 状态小组件 ============
 console.log('\n[16] 状态模式 渲染小组件');
 {
-  const ctx = makeCtx({});
+  const ctx = makeCtx({ });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   const d = new Date(); const p2 = (n) => String(n).padStart(2, '0');
   ctx.storage.setJSON('jd_coupon_sniper_state_v1', {
@@ -321,7 +334,7 @@ console.log('\n[16] 状态模式 渲染小组件');
 // ============ 17. 未抓包时状态提示 ============
 console.log('\n[17] 状态模式 未抓包提示');
 {
-  const ctx = makeCtx({});
+  const ctx = makeCtx({ });
   const out = await runScript('coupon-sniper.js', ctx, 'status');
   check('提示手动点一次', out && JSON.stringify(out.children).includes('手动点一次'));
 }
@@ -408,7 +421,7 @@ console.log('\n[24] 抢券模式 未到点会提示已就位');
   check('有提示', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
   check('提示包含放券时刻', ctx._notifications[0] && ctx._notifications[0].body.includes(hms),
     ctx._notifications[0] && ctx._notifications[0].body);
-  check('没有发请求', ctx._calls.length === 0);
+  check('没有发请求', fires(ctx).length === 0);
 }
 
 // ============ 25. 抢券：当天已完成会告知 ============
@@ -424,7 +437,7 @@ console.log('\n[25] 抢券模式 当天已完成会告知');
   check('有提示', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
   check('说明不会重复发送', ctx._notifications[0] && /不会重复/.test(ctx._notifications[0].body),
     ctx._notifications[0] && ctx._notifications[0].body);
-  check('没有发请求', ctx._calls.length === 0);
+  check('没有发请求', fires(ctx).length === 0);
 }
 
 // ============ 26. 手动试跑：无视当天已完成，照发并回报 ============
@@ -440,7 +453,7 @@ console.log('\n[26] 手动试跑 强制发出');
     date: d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()), success: true
   });
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('照样发了请求', ctx._calls.length >= 1, '实际 ' + ctx._calls.length);
+  check('照样发了请求', fires(ctx).length >= 1, '实际 ' + fires(ctx).length);
   check('回报了结果', ctx._notifications.length >= 1);
   check('结果提示含抢到', ctx._notifications.some((n) => /抢到/.test(n.body)),
     JSON.stringify(ctx._notifications.map((n) => n.body)));
@@ -468,54 +481,66 @@ console.log('\n[28] 未到点提示节流');
   check('5 次只提示 1 次', ctx._notifications.length === 1, '实际 ' + ctx._notifications.length);
 }
 
-// ============ 29. 全天补抢：间隔内不发 ============
-console.log('\n[29] 全天补抢 间隔内不重复打');
+// ============ 29. 突发：并发发数生效 ============
+console.log('\n[29] 突发模式 并发发数');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '15', MAX_ROUNDS: '1' },
-    httpReply: { status: 200, body: '{"code":"0002","echo":"券已抢完"}' }
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '3', MAX_ROUNDS: '3' },
+    httpReply: { status: 200, body: '{"code":"601"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
-  // 第一次：已过放券时刻很久 -> 视为补抢轮，立刻打
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('第一轮发出', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
-  // 第二轮：间隔未到 -> 不发
-  await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('间隔内不再发', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+  const fc = fires(ctx);
+  check('至少发了 3 发', fc.length >= 3, '实际 ' + fc.length);
+  const spread = fc[2].at - fc[0].at;
+  check('前 3 发是并发（时间戳几乎相同）', spread < 30, '相差 ' + spread + 'ms');
 }
 
-// ============ 30. 全天补抢：间隔到了再发 ============
-console.log('\n[30] 全天补抢 间隔到点后再发');
+// ============ 30. 突发：并发里有一发成功即算成功 ============
+console.log('\n[30] 突发模式 并发中任一成功即成功');
 {
-  const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '15', MAX_ROUNDS: '1' },
-    httpReply: { status: 200, body: '{"code":"0002","echo":"券已抢完"}' }
-  });
+  let n = 0;
+  const ctx = makeCtx({ env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '3', MAX_ROUNDS: '3' } });
+  ctx.http.post = async (url, o) => {
+    n++;
+    ctx._calls.push({ m: 'POST', url, o, at: Date.now(), fire: true });
+    const body = n === 2 ? '{"code":"0","subCode":"A1"}' : '{"code":"601"}';
+    return { status: 200, headers: new Map(), text: async () => body, json: async () => JSON.parse(body) };
+  };
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
-  const d = new Date(); const p2 = (n) => String(n).padStart(2, '0');
-  ctx.storage.setJSON('jd_coupon_sniper_state_v1', {
-    date: d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()),
-    lastAttemptTs: Date.now() - 16 * 60 * 1000     // 16 分钟前
-  });
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('间隔已过 -> 补发一次', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+  const st = ctx.storage.getJSON('jd_coupon_sniper_state_v1');
+  check('判为成功', st && st.success === true, JSON.stringify(st));
+  check('成功后立即停', fires(ctx).length === 3, '实际 ' + fires(ctx).length);
 }
 
-// ============ 31. 补抢到点截止后停止 ============
-console.log('\n[31] 全天补抢 过了截止时间不再发');
+// ============ 31. 终态立即停（券发完不浪费）============
+console.log('\n[31] 突发模式 终态立即停');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '15', RETRY_UNTIL: '00:01', MAX_ROUNDS: '1' },
-    httpReply: { status: 200, body: '{"code":"0002"}' }
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '20', BURST_GAP_MS: '10' },
+    httpReply: { status: 200, body: '{"code":"0002","subCodeMsg":"券已抢完"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
-  const d = new Date(); const p2 = (n) => String(n).padStart(2, '0');
-  ctx.storage.setJSON('jd_coupon_sniper_state_v1', {
-    date: d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()),
-    lastAttemptTs: Date.now() - 60 * 60 * 1000
-  });
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('截止后不发', ctx._calls.length === 0, '实际 ' + ctx._calls.length);
+  check('只打一发就停', fires(ctx).length === 1, '实际 ' + fires(ctx).length);
+  const st = ctx.storage.getJSON('jd_coupon_sniper_state_v1');
+  check('标记终态', st && st.terminal === true);
+}
+
+// ============ 32. 「未开始」判为瞬态而非终态 ============
+console.log('\n[32] 未开始算瞬态不误判为已发完');
+{
+  const ctx = makeCtx({
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '3', BURST_GAP_MS: '10' },
+    httpReply: { status: 200, body: '{"code":"0000","msg":"活动未开始"}' }
+  });
+  ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
+  await runScript('coupon-sniper.js', ctx, 'snipe');
+  const st = ctx.storage.getJSON('jd_coupon_sniper_state_v1');
+  check('未判为 empty', st && st.empty !== true, JSON.stringify(st));
+  check('未判为终态', st && st.terminal !== true);
+  check('继续重试', fires(ctx).length === 3, '实际 ' + fires(ctx).length);
 }
 
 // ============ 32. 抢到后当天不再补抢 ============
@@ -527,9 +552,9 @@ console.log('\n[32] 抢到后不再补抢');
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  const n1 = ctx._calls.length;
+  const n1 = fires(ctx).length;
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('成功后不再发', ctx._calls.length === n1, '实际 ' + ctx._calls.length);
+  check('成功后不再发', fires(ctx).length === n1, '实际 ' + fires(ctx).length);
   check('状态为 success', ctx.storage.getJSON('jd_coupon_sniper_state_v1').success === true);
 }
 
@@ -550,7 +575,7 @@ console.log('\n[33] 京东返回码语义 判定');
 console.log('\n[34] code=601 排队判为瞬态');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', MAX_ROUNDS: '3', RETRY_MS: '10' },
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '3', RETRY_MS: '10' },
     httpReply: { status: 200, body: '{"code":"601","msg":"此时排队领券的人太多，休息一会儿再试试吧！"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
@@ -558,14 +583,14 @@ console.log('\n[34] code=601 排队判为瞬态');
   const st = ctx.storage.getJSON('jd_coupon_sniper_state_v1');
   check('判为 crowded 而非 empty', st && st.crowded === true, JSON.stringify(st));
   check('判为 crowded 后未标记终态', st && st.terminal !== true);
-  check('瞬态会继续重试', ctx._calls.length === 3, '实际 ' + ctx._calls.length);
+  check('瞬态会继续重试', fires(ctx).length === 3, '实际 ' + fires(ctx).length);
 }
 
 // ============ 35. 「已抢完」= 终态，立即停 ============
 console.log('\n[35] 已抢完为终态立即停止');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', MAX_ROUNDS: '20', RETRY_MS: '10' },
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1', MAX_ROUNDS: '20', RETRY_MS: '10' },
     httpReply: { status: 200, body: '{"code":"0002","subCodeMsg":"券已抢完"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
@@ -573,14 +598,14 @@ console.log('\n[35] 已抢完为终态立即停止');
   const st = ctx.storage.getJSON('jd_coupon_sniper_state_v1');
   check('判为 empty', st && st.empty === true, JSON.stringify(st));
   check('标记为终态', st && st.terminal === true);
-  check('立刻停止只打一发', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+  check('立刻停止只打一发', fires(ctx).length === 1, '实际 ' + fires(ctx).length);
 }
 
 // ============ 36. 终态后全天补抢不再发 ============
 console.log('\n[36] 终态后不再补抢');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '1', MAX_ROUNDS: '1' },
+    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '1', PARALLEL: '1', MAX_ROUNDS: '1' },
     httpReply: { status: 200, body: '{"code":"0002","subCodeMsg":"券已抢完"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
@@ -591,14 +616,14 @@ console.log('\n[36] 终态后不再补抢');
     empty: true, terminal: true
   });
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('终态当天不再发', ctx._calls.length === 0, '实际 ' + ctx._calls.length);
+  check('终态当天不再发', fires(ctx).length === 0, '实际 ' + fires(ctx).length);
 }
 
 // ============ 37. 瞬态未果仍可补抢 ============
 console.log('\n[37] 瞬态未果仍可补抢');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '1', MAX_ROUNDS: '1' },
+    env: { TARGET_HMS: '00:00:00', RETRY_ALL_DAY: 'true', RETRY_MINUTES: '1', PARALLEL: '1', MAX_ROUNDS: '1' },
     httpReply: { status: 200, body: '{"code":"601"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
@@ -609,25 +634,26 @@ console.log('\n[37] 瞬态未果仍可补抢');
     crowded: true
   });
   await runScript('coupon-sniper.js', ctx, 'snipe');
-  check('瞬态允许再打一轮', ctx._calls.length === 1, '实际 ' + ctx._calls.length);
+  check('瞬态允许再打一轮', fires(ctx).length === 1, '实际 ' + fires(ctx).length);
 }
 
-// ============ 38. 退避：瞬态重试间隔递增 ============
-console.log('\n[38] 瞬态重试有退避');
+// ============ 38. 突发阶段快、突发结束后退避 ============
+console.log('\n[38] 突发快 过后退避');
 {
   const ctx = makeCtx({
-    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', MAX_ROUNDS: '5', RETRY_MS: '60' },
+    env: { TARGET_HMS: '00:00:00', CATCH_UP: 'true', PARALLEL: '1',
+           BURST_COUNT: '2', BURST_GAP_MS: '40', MAX_ROUNDS: '7', RETRY_MS: '100' },
     httpReply: { status: 200, body: '{"code":"601"}' }
   });
   ctx.storage.setJSON('jd_coupon_sniper_v1', SEED);
   await runScript('coupon-sniper.js', ctx, 'snipe');
+  const fc = fires(ctx);
   const gaps = [];
-  for (let i = 1; i < ctx._calls.length; i++) gaps.push(ctx._calls[i].at - ctx._calls[i - 1].at);
+  for (let i = 1; i < fc.length; i++) gaps.push(fc[i].at - fc[i - 1].at);
   console.log('     间隔序列(ms): ' + gaps.join(', '));
-  check('至少发了 4 次', ctx._calls.length >= 4, '实际 ' + ctx._calls.length);
-  check('间隔递增（退避）', gaps.length >= 2 && gaps[1] > gaps[0] && gaps[2] > gaps[1],
-    JSON.stringify(gaps));
-  check('首轮间隔很小（抢的时候要快）', gaps[0] < 200, gaps[0] + 'ms');
+  check('突发阶段间隔很小', gaps[0] < 120, gaps[0] + 'ms');
+  check('突发阶段间隔稳定（不递增）', Math.abs(gaps[0] - gaps[1]) < 60, JSON.stringify(gaps.slice(0, 2)));
+  check('突发结束后开始退避', gaps[3] > gaps[0], JSON.stringify(gaps));
 }
 
 console.log('\n———— ' + pass + ' 通过 / ' + fail + ' 失败 ————');
