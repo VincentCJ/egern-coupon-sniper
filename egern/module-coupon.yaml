@@ -1,233 +1,74 @@
-name: 烟台消费券定时抢券
-description: 京东App「烟台消费券」专区每日限量放出。本模块持续抓取领券请求刷新模板（签名不失效），并在放券时刻精确重放。
+name: 烟台消费券抢券
+description: 京东App「烟台消费券」每日限量放出。睡前点一次「领取」抓模板，0 点自动重放，抢到/没抢到都会通知。
 author: VincentCJ
 homepage: https://github.com/VincentCJ/egern-coupon-sniper
 icon: ticket
 open_url: ''
 
-# 模块参数（Egern 模块页可直接改，改完立即生效）
+# 参数越少越好（Egern 模块页可直接改）
 compat_arguments:
-  # 脚本地址：默认指向本仓库 raw；换自己的仓库改这里
-  脚本地址: 'https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/coupon-sniper.js?v=6'
+  脚本地址: 'https://raw.githubusercontent.com/VincentCJ/egern-coupon-sniper/main/egern/coupon-sniper.js?v=8'
   放券时刻: '00:00:00'
-  提前量毫秒: '0'
-  突发发数: '12'
-  突发间隔毫秒: '50'
-  并发发数: '2'
-  重试次数: '30'
-  重试间隔毫秒: '250'
   单次超时毫秒: '6000'
-  补发模式: 'false'
-  持续抓取: 'true'
-  抓包匹配: ''
-  全天补抢: 'false'
-  补抢间隔分钟: '60'
-  补抢截止: '23:00'
-  睡前自检cron: '30 21 * * *'
-  模板有效期分钟: '30'
-  详细通知: 'false'
-  抓包提醒: 'false'
+  重试次数: '30'
+  重试间隔毫秒: '400'
 
 compat_arguments_desc: |
   脚本地址: coupon-sniper.js 的 raw 地址
   放券时刻: 每天几点几分几秒发请求（一般 00:00:00）
-  提前量毫秒: 0 = 按实测 RTT 自动算提前量（推荐）；填固定值则强制
-  突发发数: 密集突发阶段打多少发
-  突发间隔毫秒: 密集突发阶段每发间隔
-  并发发数: 放券瞬间并发发几发（1=串行，2~3 更快但更易触发风控）
-  重试次数: 单次唤醒最多打多少发
-  重试次数: 一次最多打多少发
-  重试间隔毫秒: 两发之间的间隔
   单次超时毫秒: 单次请求超时
-  补发模式: true 时若当天放券时刻已过会立刻补打一次（调试用）
-  持续抓取: 开关。true = 打开京东就持续抓取并刷新模板；false = 停止抓取
-  抓包匹配: 自定义哪个 URL 算领券动作（正则，留空用内置规则）
-  全天补抢: 仅当上一轮是「排队太挤」这类瞬态未果时才补抢；券已发完/已领过/成功都会当天停止
-  补抢间隔分钟: 两次补抢之间隔多少分钟
-  补抢截止: 补抢到几点为止
-  睡前自检cron: 睡前自检的 cron（默认每天 21:30）。建议设在你睡觉前 1 小时左右
-  模板有效期分钟: 模板超过多少分钟算可能过期
-  详细通知: true = 额外推送「已就位」等过程提示；false = 只报抢券结果
-  抓包提醒: true = 每次刷新模板都推送；false = 静默（默认）
+  重试次数: 单次唤醒最多发几次（抢到/券发完会提前停）
+  重试间隔毫秒: 第一次重试后的起始间隔（之后指数退避）
 
 env_schema:
   TARGET_HMS:
     name: 放券时刻
-    description: 每天发请求的时刻
     default_value: '00:00:00'
-  PREFIRE_MS:
-    name: 提前量(毫秒)
-    description: 0 = 按实测 RTT 自动计算
-    default_value: '0'
-  BURST_COUNT:
-    name: 突发发数
-    default_value: '12'
-  BURST_GAP_MS:
-    name: 突发间隔(毫秒)
-    default_value: '50'
-  BURST_LEAD_MS:
-    name: 准备提前量(毫秒)
-    default_value: '3000'
-  PARALLEL:
-    name: 并发发数
-    default_value: '2'
-  MAX_ROUNDS:
-    name: 单次最多发数
-    default_value: '30'
-  RETRY_MS:
-    name: 重试间隔(毫秒)
-    default_value: '250'
   TIMEOUT_MS:
     name: 超时(毫秒)
     default_value: '6000'
-  CATCH_UP:
-    name: 补发模式
-    options:
-    - 'false'
-    - 'true'
-  CAPTURE_ALWAYS:
-    name: 持续抓取
-    description: 打开即持续抓取领券请求，模板始终是最新鲜的
-    options:
-    - 'true'
-    - 'false'
-  CAPTURE_MATCH:
-    name: 抓包匹配
-    description: 自定义哪个 URL 算领券动作（正则，可留空）
-    default_value: ''
-  RETRY_ALL_DAY:
-    name: 全天补抢
-    description: 仅「排队太挤」等瞬态未果时补抢；券已发完会立即停止
-    options:
-    - 'false'
-    - 'true'
-  RETRY_MINUTES:
-    name: 补抢间隔(分钟)
-    default_value: '60'
-  RETRY_UNTIL:
-    name: 补抢截止
-    default_value: '23:00'
-  CHECK_AT:
-    name: 睡前自检cron
-    default_value: '30 21 * * *'
-  STALE_MINUTES:
-    name: 模板有效期(分钟)
+  MAX_ROUNDS:
+    name: 最多发几次
     default_value: '30'
-  NOTIFY_VERBOSE:
-    name: 详细通知
-    description: 额外推送「已就位」等过程提示
-    options:
-    - 'false'
-    - 'true'
-  CAPTURE_NOTIFY:
-    name: 抓包提醒
-    description: 每次刷新模板时推送
-    options:
-    - 'false'
-    - 'true'
-  NOTIFY_THROTTLE_MS:
-    name: 通知节流(毫秒)
-    default_value: '60000'
+  RETRY_MS:
+    name: 重试间隔(毫秒)
+    default_value: '400'
 
 scriptings:
-  # 1) 持续抓包：京东 App 有流量就抓，刷新模板里的签名
+  # 1) 抓包：京东App里点「领取」时，把这次请求存成模板（可以一直开着，开销很小）
   - http_request:
-      name: 烟台消费券-自动抓包
+      name: 烟台消费券-抓包
       match: '^https?://(api\.m|api|wq|pro\.m|m|coupon|msite|func)\.jd\.com/.*'
-      script_url: '{{{脚本地址}}}?v=6'
-      update_interval: 86400
+      script_url: '{{{脚本地址}}}?v=8'
+      update_interval: 300
       timeout: 20
       body_required: true
       env:
-        CAPTURE_ALWAYS: '{{{持续抓取}}}'
-        CAPTURE_MATCH: '{{{抓包匹配}}}'
-        NOTIFY_THROTTLE_MS: '3600000'
         TARGET_HMS: '{{{放券时刻}}}'
-        CAPTURE_NOTIFY: '{{{抓包提醒}}}'
 
-  # 2) 定时重放：每分钟触发一次，脚本自己判断是否到点，到点精确等待后发出
+  # 2) 抢券：cron 每分钟，只在放券点附近的窗口内真正发请求
   - schedule:
-      name: 烟台消费券-定时抢券
+      name: 烟台消费券-抢券
       cron: '* * * * *'
-      script_url: '{{{脚本地址}}}?v=6'
-      update_interval: 86400
+      script_url: '{{{脚本地址}}}?v=8'
+      update_interval: 300
       timeout: 300
       env:
         TARGET_HMS: '{{{放券时刻}}}'
-        PREFIRE_MS: '{{{提前量毫秒}}}'
-        BURST_COUNT: '{{{突发发数}}}'
-        BURST_GAP_MS: '{{{突发间隔毫秒}}}'
-        BURST_LEAD_MS: '3000'
-        PARALLEL: '{{{并发发数}}}'
+        TIMEOUT_MS: '{{{单次超时毫秒}}}'
         MAX_ROUNDS: '{{{重试次数}}}'
         RETRY_MS: '{{{重试间隔毫秒}}}'
-        TIMEOUT_MS: '{{{单次超时毫秒}}}'
-        CATCH_UP: '{{{补发模式}}}'
-        RETRY_ALL_DAY: '{{{全天补抢}}}'
-        RETRY_MINUTES: '{{{补抢间隔分钟}}}'
-        RETRY_UNTIL: '{{{补抢截止}}}'
-        NOTIFY_VERBOSE: '{{{详细通知}}}'
-        CAPTURE_NOTIFY: '{{{抓包提醒}}}'
 
-  # 3) 睡前自检：趁人还醒着，检查模板是否还新鲜
-  - schedule:
-      name: 烟台消费券-睡前自检
-      cron: '{{{睡前自检cron}}}'
-      script_url: '{{{脚本地址}}}?v=6'
-      update_interval: 86400
-      timeout: 60
-      env:
-        CHECK_ONLY: 'true'
-        TARGET_HMS: '{{{放券时刻}}}'
-        STALE_MINUTES: '{{{模板有效期分钟}}}'
-        TIMEOUT_MS: '{{{单次超时毫秒}}}'
-        NOTIFY_VERBOSE: '{{{详细通知}}}'
-
-  # 4) 手动试跑：立刻发一次并回报结果（工具→脚本 里点它运行）
+  # 3) 试跑：手动点一下，立刻用当前模板发一次，验证模板还能不能用
   - generic:
       name: 烟台消费券-试跑
-      script_url: '{{{脚本地址}}}?v=6'
-      update_interval: 86400
-      timeout: 120
+      script_url: '{{{脚本地址}}}?v=8'
+      update_interval: 300
+      timeout: 60
       env:
         SNIPE_MODE: 'manual'
         TARGET_HMS: '{{{放券时刻}}}'
-        PREFIRE_MS: '{{{提前量毫秒}}}'
-        BURST_COUNT: '{{{突发发数}}}'
-        BURST_GAP_MS: '{{{突发间隔毫秒}}}'
-        PARALLEL: '{{{并发发数}}}'
-        MAX_ROUNDS: '{{{重试次数}}}'
-        RETRY_MS: '{{{重试间隔毫秒}}}'
         TIMEOUT_MS: '{{{单次超时毫秒}}}'
-
-  # 5) 候选列表：诊断用，列出最近抓到的请求
-  - generic:
-      name: 烟台消费券-候选列表
-      script_url: '{{{脚本地址}}}?v=6'
-      update_interval: 86400
-      timeout: 20
-
-  # 6) 开关：手动运行一次即可切换「持续抓取」开/关
-  - generic:
-      name: 烟台消费券-开关
-      script_url: '{{{脚本地址}}}?v=6'
-      update_interval: 86400
-      timeout: 20
-      env:
-        CAPTURE_ALWAYS: '{{{持续抓取}}}'
-
-  # 7) 状态：小组件
-  - generic:
-      name: 烟台消费券-状态
-      script_url: '{{{脚本地址}}}?v=6'
-      update_interval: 86400
-      timeout: 20
-      env:
-        CAPTURE_ALWAYS: '{{{持续抓取}}}'
-
-widgets:
-  - name: 烟台消费券-状态
-    script_name: 烟台消费券-状态
 
 mitm:
   hostnames:
