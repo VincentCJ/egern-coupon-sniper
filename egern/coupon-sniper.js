@@ -108,18 +108,16 @@ async function modeCapture(ctx) {
 
   const method = String(req.method || 'GET').toUpperCase();
   const fid = functionIdOf(url);
+  const isWhite = !!(fid && new RegExp('batchReceiveXFCoupon|receiveXFCoupon|receiveCoupon|govCouponReceive', 'i').test(fid));
 
-  // --- 判断这条请求像不像"领券动作" ---
+  // 判定逻辑：白名单优先 > 用户正则 > 内置关键词 > 刷新当前模板
   let custom = null;
-  if (env.CAPTURE_MATCH) {
-    try { custom = new RegExp(env.CAPTURE_MATCH, 'i'); } catch (_) { custom = null; }
-  }
-  const builtin = /coupon|consume|subsidy|gift|lottery|draw|receive|benefit|quan|券/i;
+  if (env.CAPTURE_MATCH) { try { custom = new RegExp(env.CAPTURE_MATCH, 'i'); } catch (_) { custom = null; } }
+  const builtin = /coupon|consume|subsidy|gift|lottery|draw|receive|benefit|quan|券|gov/i;
   const cur = await ctx.storage.getJSON(TPL_KEY);
   const curFid = cur && cur.functionId ? cur.functionId : '';
 
-  const sameAsCurrent = !!(fid && curFid && fid === curFid);
-  const looksCoupon = (custom ? custom.test(url) : builtin.test(url)) || sameAsCurrent;
+  const looksCoupon = isWhite || (custom ? custom.test(url) : builtin.test(url)) || (fid && curFid && fid === curFid);
   if (!looksCoupon) return;
 
   // 只有可能成为新模板的才读 body（省开销）
